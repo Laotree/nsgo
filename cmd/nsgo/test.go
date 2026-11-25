@@ -226,7 +226,12 @@ func runTests(ctx context.Context, p *project, opts testOptions) error {
 	if profile != "" {
 		runFlags = append([]string{"-coverprofile=" + profile}, flags...)
 	}
-	cmd, err := command("./...", uniqueTags(append(runTags, "nsgocheck")), runFlags)
+	pattern := "./..."
+	if fuzzRequested(runFlags) {
+		// go test fuzzes one package at a time, so -fuzz runs the directory's own package rather than its tree.
+		pattern = "."
+	}
+	cmd, err := command(pattern, uniqueTags(append(runTags, "nsgocheck")), runFlags)
 	if err != nil {
 		return err
 	}
@@ -644,6 +649,16 @@ func (r *testRun) benchmark(t *testResult) {
 
 // print shows one finished test: a line, and a failure's output, a
 // subtest's under its own line (go test gives each test its own).
+// fuzzRequested reports whether the test flags ask go test to fuzz, which it allows for one package only.
+func fuzzRequested(flags []string) bool {
+	for _, f := range flags {
+		if f == "-fuzz" || strings.HasPrefix(f, "-fuzz=") {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *testRun) print(t *testResult) {
 	mark := map[string]string{"pass": "✓", "fail": "✗", "skip": "-"}[t.Status]
 	fmt.Fprintf(r.out, "%s%s %s (%s)\n", margin, mark, t.Name, t.Elapsed.Round(time.Millisecond))

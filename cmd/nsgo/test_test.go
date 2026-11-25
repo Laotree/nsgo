@@ -1082,3 +1082,33 @@ func TestToolFailureIsTheMessage(t *testing.T) {
 		}
 	}
 }
+
+// Fuzzing runs the directory's own package, since go test refuses -fuzz with more than one (#2268).
+func TestFuzzRunsTheDirectorysPackage(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"go.mod":    "module example.com/fuzz\n\ngo 1.27.3\n",
+		"nsgo.yaml": "name: Fuzz fixture\n",
+		"fuzz_test.go": `package fuzz
+
+import "testing"
+
+func FuzzDouble(f *testing.F) {
+	f.Add(1)
+	f.Fuzz(func(t *testing.T, n int) { _ = n * 2 })
+}
+`,
+		"sub/sub.go":      "package sub\n\nvar V = 1\n",
+		"sub/sub_test.go": "package sub\n\nimport \"testing\"\n\nfunc TestSub(t *testing.T) {}\n",
+	})
+	p, err := load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runTests(t.Context(), p, testOptions{args: []string{"-fuzz=FuzzDouble", "-fuzztime=1x"}}); err != nil {
+		t.Fatalf("nsgo test -fuzz = %v, want the directory's own package fuzzed", err)
+	}
+	if err := runTests(t.Context(), p, testOptions{}); err != nil {
+		t.Fatalf("nsgo test = %v, want the tree tested", err)
+	}
+}
