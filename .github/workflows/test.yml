@@ -388,6 +388,17 @@ jobs:
   test-suite:
     runs-on: depot-ubuntu-24.04-4
     timeout-minutes: 60
+    # nsgo test takes one directory, so the suite is split by test name rather
+    # than by package: measured over the last suite log, the tests whose names
+    # start with A-Q hold 53% of its test time and those starting with R-Z the
+    # rest, so two runners finish in about the time of the larger half. A test
+    # in cmd/nsgo checks that the patterns cover every test in the module once.
+    strategy:
+      fail-fast: false
+      matrix:
+        tests:
+          - "^Test[A-Q]"
+          - "^Test[R-Z]"
     steps:
       - name: Check out
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -432,7 +443,7 @@ jobs:
           NSGO_FILE_ASSOCIATIONS: '1'
           NSGO_REQUIRE_JDK: '1'
         # examples/gallery runs its tests in sequence for about nine minutes on a hosted runner, beside the other packages, so go test's default ten-minute limit cuts it off.
-        run: xvfb-run -a go tool nsgo test -- -timeout=20m
+        run: xvfb-run -a go tool nsgo test -run '${{ matrix.tests }}' -- -timeout=20m
   web:
     runs-on: depot-ubuntu-24.04-4
     timeout-minutes: 30
