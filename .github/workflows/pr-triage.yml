@@ -1,8 +1,8 @@
 name: Pull request triage
 
-# Path labels, a Conventional Commit title check and a size label for every pull request, forks included.
+# Path labels, a Conventional Commit title check, a size label and a local CI label for every pull request, forks included.
 #
-# pull_request_target runs with a write token so that fork pull requests can be labelled, and in exchange it must never check out or run the pull request's code. No job here checks anything out: the labeler reads .github/labeler.yml from the base branch through the API, and the title reaches the script only through the environment, never through ${{ }} interpolation.
+# pull_request_target runs with a write token so that fork pull requests can be labelled, and in exchange it must never check out or run the pull request's code. No job here checks anything out: the labeler reads .github/labeler.yml from the base branch through the API, and the title and body reach their scripts only through the environment, never through ${{ }} interpolation.
 #
 # The title check is a required status check, so it also has to report on the merge queue's merge_group event. A merge group has no pull request title to read; the title was already checked on the pull request, and editing it there re-runs the check, so the job passes without doing anything there, and the label jobs do not run at all.
 
@@ -133,4 +133,97 @@ jobs:
             }
             if (!current.includes(label)) {
               await github.rest.issues.addLabels({ owner, repo, issue_number: pull_number, labels: [label] });
+            }
+
+  local-ci:
+    name: Local CI label
+    # A merge group has no body or head of its own: the labels were set when the pull request was reviewed.
+    if: github.event_name == 'pull_request_target'
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        with:
+          script: |
+            // The block describes a run this job cannot see, so it decides how closely a maintainer reads the pull request, never whether a required check may pass.
+            const marker = '<!-- local-ci -->';
+            const commentMarker = '<!-- pr-triage:local-ci -->';
+            const names = { pass: 'local-ci-pass', fail: 'local-ci-fail', skipped: 'local-ci-skipped' };
+            const styles = {
+              pass: ['0e8a16', 'The head commit declares that its local checks passed'],
+              fail: ['b60205', 'The head commit declares failing local checks, so a maintainer audits it'],
+              skipped: ['ededed', 'No valid local CI declaration names the head commit, so a maintainer audits it'],
+            };
+            const notes = {
+              fail: "The `Local CI` block declares `fail` for this pull request's head commit, so a maintainer audits the pull request before merging it.",
+              skipped: 'This pull request has no `Local CI` declaration that names its head commit, so a maintainer audits it before merging. Run the checks on that commit, fill the block in the template, then push or edit the body: this label and comment update on their own.',
+            };
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const head = process.env.HEAD || '';
+
+            // The keys are the bullet list after the marker; the first other line ends it.
+            const body = process.env.BODY || '';
+            const fields = {};
+            const at = body.indexOf(marker);
+            for (const line of at < 0 ? [] : body.slice(at + marker.length).split('\n')) {
+              const match = /^\s*-\s+([A-Za-z ]+):\s*(.*)$/.exec(line);
+              if (!match) {
+                if (line.trim() !== '') break;
+                continue;
+              }
+              fields[match[1].toLowerCase()] = match[2].trim().replace(/^`+|`+$/g, '');
+            }
+
+            // A head that is not the pushed commit means the run predates the latest push, so the declaration no longer covers what a merge would take.
+            const sha = (fields.head || '').toLowerCase();
+            const result = (fields.result || '').toLowerCase();
+            const valid = /^[0-9a-f]{7,40}$/.test(sha)
+              && head.startsWith(sha)
+              && ['pass', 'fail', 'skipped'].includes(result)
+              && Boolean(fields.commands)
+              && Boolean(fields['not covered']);
+            const state = valid ? result : 'skipped';
+            const wanted = names[state];
+            // The pushed head is the payload's, so it is safe to log; the declared text is not.
+            core.info(`local CI: ${state}, pushed head ${head}, declared head ${valid ? 'matches' : 'does not match'}`);
+
+            // A fork cannot create labels in this repository, so the job does it the first time a state appears.
+            try {
+              await github.rest.issues.getLabel({ owner, repo, name: wanted });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              const [color, description] = styles[state];
+              await github.rest.issues.createLabel({ owner, repo, name: wanted, color, description });
+            }
+
+            // Keep one of the three labels, so editing fail into pass does not leave the first one behind.
+            const live = await github.paginate(github.rest.issues.listLabelsOnIssue, { owner, repo, issue_number, per_page: 100 });
+            const current = live.map((l) => l.name);
+            for (const name of Object.values(names)) {
+              if (name !== wanted && current.includes(name)) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number, name });
+              }
+            }
+            if (!current.includes(wanted)) {
+              await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [wanted] });
+            }
+
+            // One comment carries the audit request, so repeated pushes do not stack them; a pass removes it.
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            const previous = comments.find((c) => c.user.type === 'Bot' && c.body.includes(commentMarker));
+            const note = notes[state];
+            if (!note) {
+              if (previous) await github.rest.issues.deleteComment({ owner, repo, comment_id: previous.id });
+              return;
+            }
+            const text = [commentMarker, note].join('\n\n');
+            if (previous) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: previous.id, body: text });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body: text });
             }

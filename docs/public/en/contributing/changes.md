@@ -30,6 +30,8 @@ Format Go files with `gofmt` from the Go version in `go.mod`; `gofmt -l .` lists
 
 Title it as a Conventional Commit, such as `fix(linux): keep the caret after a paste`: a squash merge makes the title the commit's subject, and a check fails until it fits. The template asks for the targets the change touches, before and after screenshots of anything visible, and the checks you ran.
 
+Run `go tool nsgo check` and `go tool nsgo test` on the commit you push, then fill the `Local CI` block in the template: that commit, the `main` commit it was based on, each command with its exit code, the result, and what a local run cannot cover. `pr-triage.yml` labels the pull request from the block, `local-ci-pass`, `local-ci-fail`, or `local-ci-skipped` when the block is missing, incomplete or names another commit, and a maintainer audits a `local-ci-skipped` or `local-ci-fail` pull request before merging it. The declaration is a promise, not evidence: required checks still decide the merge.
+
 ## Docs and the changelog
 
 - Update the document whose facts change: a subject in `docs/architecture/` for how NSGo works, a page in `docs/public/` for how apps and components use it ([Docs and the website](docs.md)).
