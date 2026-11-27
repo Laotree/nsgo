@@ -24,7 +24,7 @@
 
 ## Verification
 
-<!-- Run the checks on the commit you push, and replace every value below: pr-triage.yml reads the block and labels this pull request. A missing or incomplete block, or a head that is not this pull request's head, is labelled local-ci-skipped for a maintainer to audit. -->
+<!-- Run the checks on the commit you push, and replace every value below, keeping the local-ci line: pr-triage.yml reads the block and labels this pull request. Give each command's exit code as → N; the commands may also be a nested list. A missing or incomplete block, a head that is not this pull request's head, or a pass with a non-zero exit code is labelled local-ci-skipped for a maintainer to audit. -->
 
 <!-- local-ci -->
 - head: `SHA the checks ran on`

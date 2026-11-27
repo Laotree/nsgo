@@ -63,7 +63,8 @@ Every workflow runs on its own: `test.yml` and `codeql.yml`, which test and scan
 ## Pull requests
 
 - Run the checks on the commit you push, then fill the `Local CI` block in the template: that commit, the `main` commit it was based on, each command with its exit code, the result, and what a local run cannot cover.
-- `pr-triage.yml` labels every pull request from that block: `local-ci-pass`, `local-ci-fail`, or `local-ci-skipped` when the block is missing, incomplete or names another commit, which a maintainer audits before merging.
+- Give each command's exit code as `→ N`, on one line or as a nested list; a `pass` with a non-zero exit code is not a valid block.
+- `pr-triage.yml` labels every pull request except a bot's from that block: `local-ci-pass`, `local-ci-fail`, or `local-ci-skipped` when the block declares the checks skipped or is missing, incomplete or names another commit. A maintainer audits a `local-ci-fail` or `local-ci-skipped` pull request before merging it, and a bot comment lists what makes a block invalid.
 - The declaration is a promise, not evidence: required checks still decide the merge, and a local run covers the host only, never the emulator, browser or other-OS jobs.
 
 ## Documentation
