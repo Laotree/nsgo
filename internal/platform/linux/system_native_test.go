@@ -257,11 +257,13 @@ func TestServicesReachGTK(t *testing.T) {
 // saves a copy of it, and saves nothing when the dialog is cancelled. The
 // dialogs show in the process only without the desktop's portal, which
 // GTK reads from its environment as it starts, so the test runs in a
-// process of its own started with GDK_DEBUG=no-portals.
+// process of its own started with GDK_DEBUG=no-portals. That process adds
+// gl-disable: where EGL has no DRI3 device, GTK warns and then takes
+// SIGSEGV inside its main loop, and a dialog needs no GL context.
 func TestFileDialogsReachGTK(t *testing.T) {
 	if !strings.Contains(os.Getenv("GDK_DEBUG"), "no-portals") {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestFileDialogsReachGTK$", "-test.v")
-		cmd.Env = append(os.Environ(), "GDK_DEBUG=no-portals")
+		cmd.Env = append(os.Environ(), "GDK_DEBUG=no-portals,gl-disable")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("%v\n%s", err, out)
