@@ -1,6 +1,6 @@
 name: Test
 
-# Tests every package on Linux, Apple's backends on macOS, Android presses on an emulator, and native input regressions across desktops and the web, the browsers in a job of their own. It does not run again on main, which takes the commits the merge queue tested as they are. release.yml calls it with all-jobs before tagging a release. The Apple jobs skip a pull request that cannot affect Apple's targets (apple-changes.yml), and apple-simulator skips every pull request, unless all-jobs is set.
+# Tests every package on Linux, Apple's backends on macOS, Android presses on an emulator, and native input regressions across desktops and the web, the browsers in a job of their own. It does not run again on main, which takes the commits the merge queue tested as they are. release.yml calls it with all-jobs before tagging a release. The Apple jobs skip a pull request that cannot affect Apple's targets (apple-changes.yml); apple-stress and apple-simulator skip every pull request unless all-jobs is set, as the depot-macos pool holds about two runners.
 on:
   pull_request:
   # The merge queue tests each pull request on top of the ones ahead of it before it lands on main.
@@ -788,8 +788,8 @@ jobs:
   # The stress loop below starts a fresh process 200 times and takes about 6m41s, while the rest of the apple job takes about 4 minutes beside it.
   apple-stress:
     needs: changes
-    # Skips a pull request that cannot affect Apple's targets (apple-changes.yml) unless all-jobs is set; a failed changes job runs it.
-    if: ${{ !cancelled() && (inputs.all-jobs || needs.changes.outputs.apple != 'false') }}
+    # Never on a pull request: its two halves take two of the five depot-macos-26 jobs one needs, and the pool holds about two runners. In one run they waited 21 minutes and held that run to 27. Runs in the merge queue, by hand and for a release, and skips a change that cannot affect Apple's targets (apple-changes.yml); a failed changes job runs it.
+    if: ${{ !cancelled() && (inputs.all-jobs || (github.event_name != 'pull_request' && needs.changes.outputs.apple != 'false')) }}
     runs-on: depot-macos-26
     timeout-minutes: 30
     # The 200 fresh processes are independent, so two runners take 100 each and
