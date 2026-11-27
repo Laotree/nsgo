@@ -1,11 +1,13 @@
 package android
 
 import (
+	"bufio"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"image"
+	"io"
 	"math"
 	"net/url"
 	"strconv"
@@ -29,6 +31,27 @@ func checkMessage(kind byte, n int) error {
 		return fmt.Errorf("a message (kind %d) of %d bytes is over the %d MiB the Android runtime reads", kind, n, maxMessage>>20)
 	}
 	return nil
+}
+
+// readFramePayload reads a size-byte message payload from r, reusing *scratch when
+// scratch is non-nil, reuse is true, and size <= 4096.
+func readFramePayload(r *bufio.Reader, size uint32, scratch *[]byte, reuse bool) ([]byte, error) {
+	if size == 0 {
+		return nil, nil
+	}
+	var payload []byte
+	if scratch != nil && reuse && size <= 4096 {
+		if cap(*scratch) < int(size) {
+			*scratch = make([]byte, size)
+		}
+		payload = (*scratch)[:size]
+	} else {
+		payload = make([]byte, size)
+	}
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
 }
 
 // maxShaderPixels is the most bytes of shader pixels a batch carries, leaving room in its message for the rest of the batch (maxMessage). An image over it never goes.
@@ -599,6 +622,12 @@ const capFolderPersist = 32
 
 // pickDirPersist is bit 31 of ItemPickDirectories's limit word requesting a persistable SAF read grant (Protocol.PICK_DIR_PERSIST); older runtimes ignore the limit word.
 const pickDirPersist = 1 << 31
+
+// capFetchNoRedirect is the fourth capability byte's bit for a runtime that honors fetchNoRedirect in Downloads.java without following HTTP redirects (Protocol.CAP_FETCH_NO_REDIRECT): without it, Go refuses checked image fetches rather than letting HttpURLConnection follow redirects unchecked.
+const capFetchNoRedirect = 64
+
+// capDataSync is the fourth capability byte's bit for a runtime that reads extDataSync and runs DataSyncService (Protocol.CAP_DATA_SYNC): Go sends extDataSync only when this bit is set.
+const capDataSync = 128
 
 // readEnvironmentCapabilities reads the environment as readEnvironment does, with the third and fourth capability bytes, which say what the runtime itself can do (cap* bits) rather than the device, so they stay out of driver.Environment.
 func readEnvironmentCapabilities(r *reader) (driver.Environment, byte, byte) {

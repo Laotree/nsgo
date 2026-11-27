@@ -81,7 +81,7 @@ type host interface {
 	// pixel ratio's to their nearest unless smooth, and returns the
 	// picture as a URL; "" while an image it draws loads, which paints it
 	// again (repaint).
-	paint(id driver.NodeID, ops []driver.DrawOp, size driver.Size, scale float64, smooth bool) string
+	paint(id driver.NodeID, d *driver.Drawing, ops []driver.DrawOp, size driver.Size, scale float64, smooth bool) string
 	// tick asks for a call of mounter.tick at the next frame.
 	tick()
 }
@@ -985,7 +985,7 @@ func (m *mounter) paint(v *view) {
 	if size.Width <= 0 || size.Height <= 0 {
 		return
 	}
-	url := m.h.paint(v.id, m.animator.CanvasOps(v.id, v.drawing), size, v.drawing.ResolutionScale(), v.drawing.Smooth())
+	url := m.h.paint(v.id, v.drawing, m.animator.CanvasOps(v.id, v.drawing), size, v.drawing.ResolutionScale(), v.drawing.Smooth())
 	if url == "" {
 		m.repaint[v.id] = true
 		return
@@ -1205,6 +1205,13 @@ func (m *mounter) edited(id driver.NodeID, text string) {
 		v.value = text
 		m.send(v, driver.Event{Kind: driver.EventChangeText, Text: text, Count: v.edits})
 	}
+}
+
+// backPressed clears the page-container guard and dispatches EventBack so the
+// next ItemHistory re-arms it whenever the app still has history to pop.
+func (m *mounter) backPressed() {
+	m.back = false
+	m.h.dispatch(driver.Event{Kind: driver.EventBack})
 }
 
 // field reports a text field's focus, blur or submit.

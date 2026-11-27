@@ -4,9 +4,11 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"debug/elf"
 	"encoding/xml"
 	"go/parser"
 	"go/token"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/nsgo-dev/nsgo/cmd/nsgo/apk"
 	androidruntime "github.com/nsgo-dev/nsgo/internal/platform/android/runtime"
+	projectcfg "github.com/nsgo-dev/nsgo/project"
 )
 
 func TestAndroidRuntimeTargetsPlayAPI(t *testing.T) {
@@ -142,12 +145,11 @@ func TestAndroidGhosttyLibrary(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	want := []byte("ELF ghostty")
+	want := nativeELF(true)
 	if err := os.WriteFile(path, want, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// linkedDir is deliberately bypassed here: this test exercises the APK
-	// path and ABI naming after dependency discovery has selected the package.
+	// linkedDir is deliberately bypassed here: this test exercises the APK path, ABI naming and binary validation after dependency discovery has selected the package.
 	file, err := androidGhosttyFile(dir, "arm64", "arm64-v8a")
 	if err != nil {
 		t.Fatal(err)
@@ -155,9 +157,152 @@ func TestAndroidGhosttyLibrary(t *testing.T) {
 	if file.Name != "lib/arm64-v8a/libghostty-vt.so" || !bytes.Equal(file.Data, want) {
 		t.Fatalf("Android Ghostty file = %+v, want ABI path and bytes", file)
 	}
+	if err := os.WriteFile(path, nativeELF(false), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := androidGhosttyFile(dir, "arm64", "arm64-v8a"); err == nil {
+		t.Fatal("androidGhosttyFile accepted an x86_64 ELF for android_arm64")
+	}
+	if _, err := androidGhosttyFile(t.TempDir(), "arm64", "arm64-v8a"); err == nil {
+		t.Fatal("androidGhosttyFile succeeded when android-arm64/libghostty-vt.so is missing")
+	}
 	// x64 has no prebuild and cannot be listed without cgo, so it must not reach go list at all.
 	if file, err := androidGhosttyLibrary(t.Context(), nil, "amd64", "x86_64"); err != nil || file.Data != nil {
 		t.Fatalf("Android x64 Ghostty library = %+v, %v; want none", file, err)
+	}
+}
+
+// TestAndroidTerminalPackagingAndBionicELF verifies that android_arm64 APK, AAB and AAR builds package libghostty-vt.so only when base/terminal is imported, and that the cgo-free arm64 executable links bionic's linker64, libdl.so and libc.so (with __errno rather than glibc's __errno_location).
+func TestAndroidTerminalPackagingAndBionicELF(t *testing.T) {
+	wantGhostty, err := os.ReadFile(filepath.Join("..", "..", "base", "terminal", "internal", "library", "lib", "android-arm64", "libghostty-vt.so"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readZipEntry := func(t *testing.T, archivePath, entry string) ([]byte, bool) {
+		t.Helper()
+		r, err := zip.OpenReader(archivePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Close()
+		for _, f := range r.File {
+			if f.Name != entry {
+				continue
+			}
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := io.ReadAll(rc)
+			rc.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			return data, true
+		}
+		return nil, false
+	}
+
+	for _, linked := range []bool{true, false} {
+		name := "without-terminal"
+		if linked {
+			name = "with-terminal"
+		}
+		t.Run(name, func(t *testing.T) {
+			p := ghosttyProject(t, linked)
+			if linked {
+				// Reference both base/terminal (pulling in internal/purego and fakecgo) and syscall.Setuid (exercising fakecgo's bionic __errno import).
+				writeFiles(t, p.Dir, map[string]string{
+					"main.go": "package main\nimport (\n\t\"syscall\"\n\t\"github.com/nsgo-dev/nsgo/base/terminal\"\n)\nfunc main() {\n\t_ = terminal.Load()\n\t_ = syscall.Setuid(0)\n}\n",
+				})
+			}
+			out := t.TempDir()
+			apkPath, err := buildAndroidAPK(t.Context(), p, out, "arm64")
+			if err != nil {
+				t.Fatalf("buildAndroidAPK: %v", err)
+			}
+			aabPath, err := buildAndroidAAB(t.Context(), p, out, "arm64")
+			if err != nil {
+				t.Fatalf("buildAndroidAAB: %v", err)
+			}
+			if err := buildAndroidAAR(t.Context(), p, out, "arm64"); err != nil {
+				t.Fatalf("buildAndroidAAR: %v", err)
+			}
+			aarPath := filepath.Join(out, p.Name+".aar")
+
+			for kind, check := range map[string][2]string{
+				"APK": {apkPath, "lib/arm64-v8a/libghostty-vt.so"},
+				"AAB": {aabPath, "base/lib/arm64-v8a/libghostty-vt.so"},
+				"AAR": {aarPath, "jni/arm64-v8a/libghostty-vt.so"},
+			} {
+				data, ok := readZipEntry(t, check[0], check[1])
+				if ok != linked {
+					t.Fatalf("%s %s present=%v, want %v", kind, check[1], ok, linked)
+				}
+				if linked && !bytes.Equal(data, wantGhostty) {
+					t.Fatalf("%s %s differs from committed android-arm64 prebuild", kind, check[1])
+				}
+			}
+
+			if !linked {
+				return
+			}
+			exeData, ok := readZipEntry(t, apkPath, "lib/arm64-v8a/libnsgo.so")
+			if !ok {
+				t.Fatal("APK missing lib/arm64-v8a/libnsgo.so")
+			}
+			ef, err := elf.NewFile(bytes.NewReader(exeData))
+			if err != nil {
+				t.Fatalf("parse libnsgo.so ELF: %v", err)
+			}
+			defer ef.Close()
+			if ef.Class != elf.ELFCLASS64 || ef.Data != elf.ELFDATA2LSB || ef.Machine != elf.EM_AARCH64 {
+				t.Fatalf("unexpected libnsgo.so ELF header: class=%v data=%v machine=%v", ef.Class, ef.Data, ef.Machine)
+			}
+			var interp string
+			for _, prog := range ef.Progs {
+				if prog.Type == elf.PT_INTERP {
+					raw, err := io.ReadAll(prog.Open())
+					if err != nil {
+						t.Fatalf("read PT_INTERP: %v", err)
+					}
+					interp = strings.TrimRight(string(raw), "\x00")
+				}
+			}
+			if interp != "/system/bin/linker64" {
+				t.Fatalf("PT_INTERP = %q, want /system/bin/linker64", interp)
+			}
+			needed, err := ef.DynString(elf.DT_NEEDED)
+			if err != nil {
+				t.Fatalf("DT_NEEDED: %v", err)
+			}
+			for _, wantLib := range []string{"libdl.so", "libc.so"} {
+				if !slices.Contains(needed, wantLib) {
+					t.Errorf("DT_NEEDED %v missing %s", needed, wantLib)
+				}
+			}
+			for _, gotLib := range needed {
+				if strings.Contains(gotLib, ".so.") {
+					t.Errorf("DT_NEEDED contains versioned glibc soname %q", gotLib)
+				}
+			}
+			imported, err := ef.ImportedSymbols()
+			if err != nil {
+				t.Fatalf("ImportedSymbols: %v", err)
+			}
+			symSet := map[string]bool{}
+			for _, sym := range imported {
+				symSet[sym.Name] = true
+			}
+			for _, wantSym := range []string{"dlopen", "dlsym", "dlerror", "__errno"} {
+				if !symSet[wantSym] {
+					t.Errorf("libnsgo.so missing expected bionic dynamic import %q", wantSym)
+				}
+			}
+			if symSet["__errno_location"] {
+				t.Error("libnsgo.so imports glibc-only __errno_location instead of bionic __errno")
+			}
+		})
 	}
 }
 
@@ -188,7 +333,7 @@ func TestAndroidLibraries(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		libs, err := androidLibraries(t.Context(), &project{Dir: dir}, "arm64", app)
+		libs, err := androidLibraries(t.Context(), &project{Config: projectcfg.Config{Dir: dir}}, "arm64", app)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -196,13 +341,13 @@ func TestAndroidLibraries(t *testing.T) {
 			t.Errorf("an app that %s declares %v, want %v", c.name, libs, c.want)
 		}
 	}
-	if m := aarManifest(false, nil, false); strings.Contains(m, "uses-library") {
+	if m := aarManifest(false, nil, false, false); strings.Contains(m, "uses-library") {
 		t.Errorf("an AAR that reads no geometry declares a library:\n%s", m)
 	}
-	if m := aarManifest(false, []string{windowExtensions}, false); !strings.Contains(m, `<uses-library android:name="androidx.window.extensions" android:required="false" />`) {
+	if m := aarManifest(false, []string{windowExtensions}, false, false); !strings.Contains(m, `<uses-library android:name="androidx.window.extensions" android:required="false" />`) {
 		t.Errorf("the AAR's manifest lacks the window extensions:\n%s", m)
 	}
-	if m := aarManifest(false, nil, false); !strings.Contains(m, `android.intent.action.PROCESS_TEXT`) || !strings.Contains(m, `android:mimeType="text/plain"`) {
+	if m := aarManifest(false, nil, false, false); !strings.Contains(m, `android.intent.action.PROCESS_TEXT`) || !strings.Contains(m, `android:mimeType="text/plain"`) {
 		t.Errorf("the AAR's manifest lacks the ACTION_PROCESS_TEXT query:\n%s", m)
 	}
 }
@@ -213,7 +358,7 @@ func TestAndroidLiveUpdateReceiverManifests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, manifest := range map[string]string{"APK": string(data), "AAR": aarManifest(false, nil, false)} {
+	for name, manifest := range map[string]string{"APK": string(data), "AAR": aarManifest(false, nil, false, false)} {
 		var doc struct {
 			Application struct {
 				Receivers []struct {
@@ -397,7 +542,7 @@ func TestAndroidSessionAutomationOverADB(t *testing.T) {
 			t.Setenv("ANDROID_SERIAL", "")
 
 			dir := t.TempDir()
-			p := &project{Dir: dir, Name: "Demo", ID: "dev.example.demo"}
+			p := &project{Config: projectcfg.Config{Dir: dir, Name: "Demo", ID: "dev.example.demo"}}
 			opts := devOptions{
 				automation: tc.automation,
 				fps:        true,
@@ -450,20 +595,28 @@ func TestAndroidSessionAutomationOverADB(t *testing.T) {
 func TestBackgroundMotionAARIsExplicitAndNonExported(t *testing.T) {
 	for _, overlay := range []bool{false, true} {
 		for _, motion := range []bool{false, true} {
-			text := aarManifest(overlay, nil, motion)
-			if strings.Contains(text, apk.MotionService) != motion || strings.Contains(text, `android:foregroundServiceType="shortService"`) != motion {
-				t.Fatalf("motion service opt-in lost: overlay=%v motion=%v", overlay, motion)
-			}
-			count := strings.Count(text, `android:name="android.permission.FOREGROUND_SERVICE"`)
-			want := 0
-			if overlay || motion {
-				want = 1
-			}
-			if count != want {
-				t.Fatalf("%d foreground permissions, want %d", count, want)
-			}
-			if !strings.Contains(text, `android:name="dev.oneo.nsgo.SensorRegionReceiver" android:exported="false"`) {
-				t.Fatal("geofence receiver can be invoked by other apps")
+			for _, dataSync := range []bool{false, true} {
+				text := aarManifest(overlay, nil, motion, dataSync)
+				if strings.Contains(text, apk.MotionService) != motion || strings.Contains(text, `android:foregroundServiceType="shortService"`) != motion {
+					t.Fatalf("motion service opt-in lost: overlay=%v motion=%v dataSync=%v", overlay, motion, dataSync)
+				}
+				if strings.Contains(text, apk.DataSyncService) != dataSync || strings.Contains(text, `android:foregroundServiceType="dataSync"`) != dataSync {
+					t.Fatalf("dataSync service opt-in lost: overlay=%v motion=%v dataSync=%v", overlay, motion, dataSync)
+				}
+				if strings.Contains(text, "FOREGROUND_SERVICE_DATA_SYNC") != dataSync {
+					t.Fatalf("dataSync permission mismatch: dataSync=%v", dataSync)
+				}
+				count := strings.Count(text, `android:name="android.permission.FOREGROUND_SERVICE"`)
+				want := 0
+				if overlay || motion || dataSync {
+					want = 1
+				}
+				if count != want {
+					t.Fatalf("%d foreground permissions, want %d (overlay=%v motion=%v dataSync=%v)", count, want, overlay, motion, dataSync)
+				}
+				if !strings.Contains(text, `android:name="dev.oneo.nsgo.SensorRegionReceiver" android:exported="false"`) {
+					t.Fatal("geofence receiver can be invoked by other apps")
+				}
 			}
 		}
 	}

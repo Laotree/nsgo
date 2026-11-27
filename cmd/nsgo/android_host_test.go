@@ -10,18 +10,22 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	projectcfg "github.com/nsgo-dev/nsgo/project"
 )
 
 func TestAndroidHostTracksPackagingInputs(t *testing.T) {
 	dir := t.TempDir()
 	p := &project{
-		Dir: dir,
-		Icon: icons{
-			Android: &androidIcon{PNG: filepath.Join(dir, "assets/android-icon.png")},
-		},
-		LaunchScreen: &launchScreen{
-			launchAppearance: launchAppearance{Image: filepath.Join(dir, "assets/splash.png")},
-			Dark:             launchAppearance{Image: filepath.Join(dir, "assets/splash-dark.png")},
+		Config: projectcfg.Config{
+			Dir: dir,
+			Icon: icons{
+				Android: &androidIcon{PNG: filepath.Join(dir, "assets/android-icon.png")},
+			},
+			LaunchScreen: &launchScreen{
+				LaunchAppearance: launchAppearance{Image: filepath.Join(dir, "assets/splash.png")},
+				Dark:             launchAppearance{Image: filepath.Join(dir, "assets/splash-dark.png")},
+			},
 		},
 	}
 	p.I18n.Dir = filepath.Join(dir, "locales")
@@ -116,7 +120,7 @@ func TestAndroidHostSessionFastReloadOverADB(t *testing.T) {
 		"nsgo.yaml":          "name: Demo\nid: dev.example.demo\n",
 		"resources/data.txt": "v1",
 	})
-	p := &project{Dir: projDir, Name: "Demo", ID: "dev.example.demo", Version: "1.0.0"}
+	p := &project{Config: projectcfg.Config{Dir: projDir, Name: "Demo", ID: "dev.example.demo", Version: "1.0.0"}}
 
 	envLog := filepath.Join(tmp, "host-env.log")
 	hostCalls := 0
@@ -264,5 +268,18 @@ func TestAndroidHostSessionFastReloadOverADB(t *testing.T) {
 	envLines := strings.Split(strings.TrimSpace(string(envRaw)), "\n")
 	if !slices.Contains(envLines, wantEnv) {
 		t.Errorf("host process env log = %q, want %q", envLines, wantEnv)
+	}
+}
+
+func TestAndroidHostStartArgs(t *testing.T) {
+	plain := androidHostStartArgs("dev.example.demo", devOptions{})
+	wantPlain := []string{"shell", "am", "start", "-W", "-S", "-n", "dev.example.demo" + androidComponent}
+	if !slices.Equal(plain, wantPlain) {
+		t.Fatalf("plain args = %v, want %v", plain, wantPlain)
+	}
+	auto := androidHostStartArgs("dev.example.demo", devOptions{automation: true})
+	wantAuto := append(wantPlain, "--ez", androidAutomationExtra, "true")
+	if !slices.Equal(auto, wantAuto) {
+		t.Fatalf("automation args = %v, want %v", auto, wantAuto)
 	}
 }

@@ -150,6 +150,8 @@ const (
 	msgAudioOutputReport = 37
 	// msgCaptureReply is a capture result answering ItemCapture: surface, count, error and PNG (capture.go, SurfaceCapture.java).
 	msgCaptureReply = 39
+	// msgDataSyncReport is what the runtime's DataSyncService reports for mobile.StartDataSync, JSON (driver.ReportDataSync).
+	msgDataSyncReport = 43
 )
 
 // Extended Go-to-Java message kinds, the sub-kind byte of a msgExtended message, kept in sync with Protocol.java's EXT_* constants (TestJavaExtendedKindsMatchGo). Each is extName = n, with n from 1 up: 0 is never a kind, so a msgExtended message whose sub-kind was left out is refused rather than read as one.
@@ -174,6 +176,8 @@ const (
 	extPlayUpdate = 13
 	// extCloudStorage is a JSON command for package cloud to the runtime's Play Games Saved Games bridge (CloudStorage.java), from driver.SendCloudStorage, answered by msgCloudStorageReport.
 	extCloudStorage = 14
+	// extDataSync carries a process-wide dataSync foreground service command as JSON, which NsgoEngine hands to DataSyncService, answered by msgDataSyncReport.
+	extDataSync = 15
 	// extDownload carries a process-wide background download command as JSON, which NsgoEngine hands to BackgroundDownloadService.
 	extDownload = 5
 	// extGPUFrame submits an off-commit 3D GPU frame to GpuView.java, gpu.go's encoding.
@@ -234,6 +238,10 @@ type surface struct {
 	folderHandles atomic.Bool
 	// folderPersist is set once the runtime's environment says it supports persistent directory grants (capFolderPersist).
 	folderPersist atomic.Bool
+	// fetchNoRedirect is set once the runtime's environment says Downloads.java honors fetchNoRedirect (capFetchNoRedirect).
+	fetchNoRedirect atomic.Bool
+	// dataSync is set once the runtime's environment says it reads extDataSync and runs DataSyncService (capDataSync).
+	dataSync atomic.Bool
 	// perf measures the surface when an app or test asks (-fps).
 	perf *performance
 
@@ -323,7 +331,7 @@ func connect(opts Options) *surface {
 	s.textRPC = newTextRPC(func(payload []byte, deadline time.Time) error {
 		s.bulk.priority.Lock()
 		defer s.bulk.priority.Unlock()
-		return s.sendBefore(msgTextRequest, deadline, func(w *writer) { w.buf = append(w.buf, payload...) })
+		return s.sendRawBefore(msgTextRequest, deadline, payload)
 	})
 	if !hostRuntime {
 		useDNS()
@@ -385,6 +393,16 @@ func connect(opts Options) *surface {
 			driver.ReportCloudStorage(cloudStorageUnavailable(msg))
 		}
 	})
+	driver.ConnectDataSync(func(msg []byte) error {
+		if !s.dataSync.Load() {
+			return driver.ErrDataSyncUnavailable
+		}
+		err := s.sendExtended(extDataSync, func(w *writer) { w.buf = append(w.buf, msg...) })
+		if errors.Is(err, errNoExtendedMessages) {
+			return driver.ErrDataSyncUnavailable
+		}
+		return err
+	})
 	return s
 }
 
@@ -394,8 +412,9 @@ func connect(opts Options) *surface {
 func (s *surface) serve(app engine.App, opts Options, test *testOpen) {
 	in := bufio.NewReader(s.in)
 	bulk := bulkReader{accept: func(kind byte) bool { return kind == msgFolderReply || kind == msgFetched }}
+	var readScratch []byte
 	for {
-		kind, payload, err := readMessage(in)
+		kind, payload, err := readMessageInto(in, &readScratch)
 		if err == nil && kind == msgBulkReply {
 			if len(payload) == 0 {
 				s.bulkReady.Store(true)
@@ -548,6 +567,8 @@ func (s *surface) serve(app engine.App, opts Options, test *testOpen) {
 			s.videoPiP.Store(fourth&capVideoPiP != 0)
 			s.folderHandles.Store(fourth&capFolderHandles != 0)
 			s.folderPersist.Store(fourth&capFolderPersist != 0)
+			s.fetchNoRedirect.Store(fourth&capFetchNoRedirect != 0)
+			s.dataSync.Store(fourth&capDataSync != 0)
 			// The bulk hello waits for the first environment, which says whether the runtime reads extended messages: one that does not keeps both sides on complete messages (errNoExtendedMessages).
 			if s.extendedMessages.Load() && s.bulkHello.CompareAndSwap(false, true) {
 				_ = s.sendExtended(extBulk, func(*writer) {})
@@ -623,6 +644,8 @@ func (s *surface) serve(app engine.App, opts Options, test *testOpen) {
 			s.audioOutputReport(&r)
 		case msgCloudStorageReport:
 			driver.ReportCloudStorage(slices.Clone(payload))
+		case msgDataSyncReport:
+			driver.ReportDataSync(slices.Clone(payload))
 		case msgDNS:
 			servers := make([]string, r.u32())
 			for i := range servers {
@@ -664,6 +687,7 @@ func (s *surface) startEngine(app engine.App, size driver.Size, g driver.Geometr
 		s.send(msgPerfPanel, func(w *writer) { w.flags(s.perf.showPanel) })
 	}
 	imageload.HTTP = s.httpGet
+	imageload.HTTPNoRedirect = s.httpGetNoRedirect
 	imageload.HTTPToFile = s.httpGetToFile
 	imageload.UseDiskCache(eopts.CacheDir)
 	s.engine = engine.Start(s, app, eopts)
@@ -821,7 +845,7 @@ func (s *surface) unstage(save uint64) {
 // dnsServers are the DNS servers the runtime last reported.
 var dnsServers atomic.Pointer[[]string]
 
-func (s *surface) requestText(kind byte, body func(*writer)) ([]byte, bool) {
+func (s *surface) requestTextReply(kind byte, body func(*writer)) (textReply, bool) {
 	var start time.Time
 	if s.perf != nil {
 		start = time.Now()
@@ -832,9 +856,25 @@ func (s *surface) requestText(kind byte, body func(*writer)) ([]byte, bool) {
 	}
 	if reply.err != nil {
 		log.Printf("android text %s %d: %v", textOperation(kind), id, reply.err)
+		return textReply{}, false
+	}
+	return reply, true
+}
+
+func (s *surface) requestText(kind byte, body func(*writer)) ([]byte, bool) {
+	reply, ok := s.requestTextReply(kind, body)
+	if !ok {
 		return nil, false
 	}
-	return reply.data, true
+	if reply.data != nil {
+		return reply.data, true
+	}
+	if reply.inlineLen == 0 {
+		return nil, true
+	}
+	out := make([]byte, reply.inlineLen)
+	copy(out, reply.inline[:reply.inlineLen])
+	return out, true
 }
 
 func (s *surface) receiveText(r *reader) {
@@ -843,13 +883,18 @@ func (s *surface) receiveText(r *reader) {
 		return
 	}
 	id, kind, failed := r.u64(), r.byte(), r.byte()
-	reply := textReply{data: r.buf}
+	var reply textReply
 	if failed != 0 {
 		if failed == 1 && len(r.buf) >= 4 && uint32(len(r.buf)-4) == binary.BigEndian.Uint32(r.buf) {
 			reply = textReply{err: errors.New(r.str())}
 		} else {
 			reply = textReply{err: errors.New("malformed error reply")}
 		}
+	} else if len(r.buf) <= len(reply.inline) {
+		reply.inlineLen = uint8(len(r.buf))
+		copy(reply.inline[:], r.buf)
+	} else {
+		reply.data = slices.Clone(r.buf)
 	}
 	if !s.textRPC.complete(id, kind, reply) {
 		log.Printf("android text: unexpected %s reply %d", textOperation(kind), id)
@@ -868,7 +913,7 @@ func (s *surface) prepare(owner uint32, t *driver.AttributedText) preparedText {
 	for _, a := range t.Attachments {
 		p.attachments = append(p.attachments, a.Size)
 	}
-	_, p.ready = s.requestText(textPrepare, func(w *writer) {
+	_, p.ready = s.requestTextReply(textPrepare, func(w *writer) {
 		w.u32(p.id)
 		writeTextPrepare(w, t, owner)
 	})
@@ -891,11 +936,12 @@ type preparedText struct {
 // Measure asks the runtime's StaticLayout and estimates the size on failure.
 func (p preparedText) Measure(maxWidth driver.Points) driver.Size {
 	if p.ready {
-		if data, ok := p.s.requestText(textMeasure, func(w *writer) {
+		if reply, ok := p.s.requestTextReply(textMeasure, func(w *writer) {
 			w.u32(p.id)
 			w.points(maxWidth) // Auto, a NaN, does not wrap
 			w.u32(p.owner)
 		}); ok {
+			data := reply.bytes()
 			if len(data) == 8 {
 				r := reader{data}
 				return driver.Size{Width: r.points(), Height: r.points()}
@@ -919,7 +965,7 @@ func (p preparedText) Layout(size driver.Size) driver.TextLayout {
 		return l
 	}
 	l.id = p.s.ids.Add(1)
-	data, ok := p.s.requestText(textLayoutOp, func(w *writer) {
+	reply, ok := p.s.requestTextReply(textLayoutOp, func(w *writer) {
 		w.u32(p.id)
 		w.u32(l.id)
 		w.points(size.Width)
@@ -928,6 +974,7 @@ func (p preparedText) Layout(size driver.Size) driver.TextLayout {
 	if !ok {
 		return l
 	}
+	data := reply.bytes()
 	if len(data) < 4 {
 		log.Print("android text layout: missing attachments count")
 		return l
@@ -939,20 +986,19 @@ func (p preparedText) Layout(size driver.Size) driver.TextLayout {
 		return l
 	}
 	l.native = true
-	l.attachments = make([]attachmentBox, n)
-	l.sizes = p.attachments
-	for i := range l.attachments {
-		x, y := r.points(), r.points()
-		l.attachments[i] = attachmentBox{driver.Point{X: x, Y: y}, !math.IsNaN(float64(x))}
+	if n > 0 {
+		l.attachments = make([]attachmentBox, n)
+		l.sizes = p.attachments
+		for i := range l.attachments {
+			x, y := r.points(), r.points()
+			l.attachments[i] = attachmentBox{driver.Point{X: x, Y: y}, !math.IsNaN(float64(x))}
+		}
 	}
 	return l
 }
 
 func (p preparedText) Release() {
-	p.s.send(msgRelease, func(w *writer) {
-		w.u32(p.id)
-		w.u32(p.owner)
-	})
+	_ = p.s.sendRelease(p.id, p.owner)
 }
 
 // layoutCut lays p out with its last line's rest cut at its head or
@@ -1113,10 +1159,7 @@ type attachmentBox struct {
 // Release frees a StaticLayout that no mount batch will name.
 func (l *textLayout) Release() {
 	if l.id != 0 {
-		l.s.send(msgRelease, func(w *writer) {
-			w.u32(l.id)
-			w.u32(l.owner)
-		})
+		_ = l.s.sendRelease(l.id, l.owner)
 	}
 }
 
@@ -1601,6 +1644,32 @@ func (s *surface) sendParts(kind byte, head, body []byte) error {
 	})
 }
 
+func (s *surface) sendRelease(id, owner uint32) error {
+	var payload [8]byte
+	binary.BigEndian.PutUint32(payload[0:], id)
+	binary.BigEndian.PutUint32(payload[4:], owner)
+	return s.sendRawBefore(msgRelease, time.Time{}, payload[:])
+}
+
+func (s *surface) sendRawBefore(kind byte, deadline time.Time, payload []byte) error {
+	if err := checkMessage(kind, len(payload)); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !deadline.IsZero() && !time.Now().Before(deadline) {
+		return errTextTimeout
+	}
+	buf := append(s.buf[:0], kind, 0, 0, 0, 0)
+	binary.BigEndian.PutUint32(buf[1:], uint32(len(payload)))
+	buf = append(buf, payload...)
+	_, err := s.out.Write(buf)
+	if cap(buf) <= 1<<20 {
+		s.buf = buf
+	}
+	return err
+}
+
 func (s *surface) sendBefore(kind byte, deadline time.Time, body func(w *writer)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1621,6 +1690,10 @@ func (s *surface) sendBefore(kind byte, deadline time.Time, body func(w *writer)
 }
 
 func readMessage(r *bufio.Reader) (byte, []byte, error) {
+	return readMessageInto(r, nil)
+}
+
+func readMessageInto(r *bufio.Reader, scratch *[]byte) (byte, []byte, error) {
 	var head [5]byte
 	if _, err := io.ReadFull(r, head[:]); err != nil {
 		return 0, nil, err
@@ -1629,8 +1702,9 @@ func readMessage(r *bufio.Reader) (byte, []byte, error) {
 	if head[0] == msgBulkReply && size > bulkHeader+bulkChunk {
 		return 0, nil, errBulkFrame
 	}
-	payload := make([]byte, size)
-	if _, err := io.ReadFull(r, payload); err != nil {
+	reuse := head[0] == msgTextReply || head[0] == msgFrame || head[0] == msgPerfFrame || head[0] == msgEvent
+	payload, err := readFramePayload(r, size, scratch, reuse)
+	if err != nil {
 		return 0, nil, err
 	}
 	return head[0], payload, nil

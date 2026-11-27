@@ -33,6 +33,8 @@ type mounter struct {
 	// dropped records once the kinds this mounter has no case for, so the
 	// missing view is said out loud instead of vanishing in a switch.
 	dropped map[driver.ItemKind]bool
+	// droppedNative records once the native component names this mounter has no renderer for.
+	droppedNative map[string]bool
 	// keys is the surface's keyboard shortcut table, which the page's
 	// physical key events are matched against here.
 	keys []driver.KeyBinding
@@ -93,8 +95,12 @@ type view struct {
 	// screen is a screen's system header config, when it has one, and the last EventScreenInsets sent for it.
 	screen         *driver.ScreenConfig
 	reportedInsets *driver.Edges
-	content        driver.Size
-	offset         driver.Point
+	// web is a web view's current config, kept for host-side navigation policy checks such as OpenWindowEvent.
+	web *driver.WebConfig
+	// tabBar holds the accumulated props and reported size of a core.TabBar native view.
+	tabBar  *harmonyTabBar
+	content driver.Size
+	offset  driver.Point
 	// applied counts the scrolls the engine asked for, which its event
 	// answers carry.
 	applied   uint32
@@ -121,10 +127,11 @@ func (m *mounter) imagePixels(it *driver.MountItem) {
 
 func newMounter(s *surface) *mounter {
 	return &mounter{
-		s:       s,
-		views:   map[driver.NodeID]*view{},
-		scene:   newTouchScene(nil),
-		dropped: map[driver.ItemKind]bool{},
+		s:             s,
+		views:         map[driver.NodeID]*view{},
+		scene:         newTouchScene(nil),
+		dropped:       map[driver.ItemKind]bool{},
+		droppedNative: map[string]bool{},
 	}
 }
 
@@ -163,6 +170,7 @@ func (m *mounter) mount(b *driver.MountBatch) {
 		}
 	}
 	m.reportScreenInsets()
+	m.reportTabBarSizes()
 	if m.anim != nil && m.anim.Running() {
 		m.s.RequestFrame()
 	}
@@ -226,6 +234,95 @@ func (m *mounter) reportScreenInsets() {
 	}
 }
 
+// emitTabBar writes op "tb" when v's serialized tab bar config changed.
+func (m *mounter) emitTabBar(v *view) bool {
+	if v == nil || v.tabBar == nil {
+		return false
+	}
+	raw := v.tabBar.marshal()
+	if raw == v.tabBar.lastJSON {
+		return false
+	}
+	v.tabBar.lastJSON = raw
+	m.o.op("tb", v.id).str(raw)
+	return true
+}
+
+// reportTabBarSizes updates each mounted core.TabBar's safe-area overlap and
+// dark appearance, flushes any changed "tb" op, and reports EventNativeSize
+// whenever the bar's natural size changes.
+func (m *mounter) reportTabBarSizes() {
+	var rw, rh driver.Points
+	if root := m.views[m.root]; root != nil {
+		rw, rh = root.frame.Size.Width, root.frame.Size.Height
+	}
+	var safe driver.Edges
+	var dark, rtl bool
+	if m.s != nil {
+		if rw <= 0 || rh <= 0 {
+			rw, rh = m.s.size0.Width, m.s.size0.Height
+		}
+		safe = m.s.env.SafeArea
+		dark = m.s.env.Dark
+		rtl = m.s.env.RTL
+	}
+	flushed := false
+	for _, v := range m.views {
+		if v == nil || v.tabBar == nil {
+			continue
+		}
+		var overlap driver.Edges
+		if !v.style.Hidden && rw > 0 && rh > 0 && v.frame.Size.Width > 0 && v.frame.Size.Height > 0 {
+			var ox, oy driver.Points
+			for p := v; p != nil && p.id != m.root; p = m.views[p.parent] {
+				ox += p.frame.Origin.X
+				oy += p.frame.Origin.Y
+				if p.parent == 0 {
+					break
+				}
+			}
+			overlap = driver.Edges{
+				Top:    max(0, safe.Top-oy),
+				Left:   max(0, safe.Left-ox),
+				Right:  max(0, safe.Right-max(0, rw-(ox+v.frame.Size.Width))),
+				Bottom: max(0, safe.Bottom-max(0, rh-(oy+v.frame.Size.Height))),
+			}
+		}
+		size, insetBottom, insetLeft, insetRight := v.tabBar.naturalSize(overlap, rtl)
+		if v.tabBar.spec.InsetBottom != insetBottom || v.tabBar.spec.InsetLeft != insetLeft ||
+			v.tabBar.spec.InsetRight != insetRight || v.tabBar.spec.Dark != dark {
+			v.tabBar.spec.InsetBottom = insetBottom
+			v.tabBar.spec.InsetLeft = insetLeft
+			v.tabBar.spec.InsetRight = insetRight
+			v.tabBar.spec.Dark = dark
+			if m.emitTabBar(v) {
+				flushed = true
+			}
+		}
+		if !v.tabBar.hasReportedSize || v.tabBar.reportedSize != size {
+			v.tabBar.hasReportedSize = true
+			v.tabBar.reportedSize = size
+			if m.s.canDispatch() {
+				m.s.dispatch(driver.Event{Kind: driver.EventNativeSize, ID: v.id, Size: size})
+			}
+		}
+	}
+	if flushed && m.s != nil && !m.s.bridge.IsUndefined() && !m.s.bridge.IsNull() {
+		m.flush()
+	}
+}
+
+// tabSelected dispatches EventNative "change" when the user taps tab index.
+func (m *mounter) tabSelected(id driver.NodeID, index int) {
+	v := m.views[id]
+	if v == nil || v.tabBar == nil || index < 0 || index >= len(v.tabBar.spec.Items) {
+		return
+	}
+	if m.s.canDispatch() {
+		m.s.dispatch(driver.Event{Kind: driver.EventNative, ID: id, Text: "change", Data: float64(index)})
+	}
+}
+
 // applyAnimated writes what the animator moved this frame: each view's
 // style with its animated values, and each canvas's drawing with its slots.
 // It reports whether it wrote anything, which is a frame the screen shows.
@@ -242,7 +339,7 @@ func (m *mounter) applyAnimated() bool {
 	})
 	m.anim.ChangedCanvases(func(id driver.NodeID) {
 		if v := m.views[id]; v != nil && v.drawing != nil {
-			m.o.op("cv", id).str(encodeCanvas(m.anim.CanvasOps(id, v.drawing), m.packedAtlas))
+			m.o.op("cv", id).str(encodeCanvas(v.drawing, m.anim.CanvasOps(id, v.drawing), m.packedAtlas))
 			changed = true
 		}
 	})
@@ -332,7 +429,7 @@ func (m *mounter) item(b *driver.MountBatch, it *driver.MountItem) {
 				ops = m.anim.CanvasOps(it.ID, it.Drawing)
 			}
 		}
-		m.o.op("cv", it.ID).str(encodeCanvas(ops, m.packedAtlas))
+		m.o.op("cv", it.ID).str(encodeCanvas(it.Drawing, ops, m.packedAtlas))
 	case driver.ItemImage:
 		src, fit, data, nearest := "", "cover", "", false
 		if it.Image != nil {
@@ -501,12 +598,55 @@ func (m *mounter) item(b *driver.MountBatch, it *driver.MountItem) {
 		m.o.op("vseek", it.ID).num(it.Time.Seconds())
 	case driver.ItemWeb:
 		if c := it.Web; c != nil {
-			m.o.op("web", it.ID).str(c.Source.Src).boolean(c.NoJavaScript).str(c.InjectedJavaScriptBeforeContent).str(c.InjectedJavaScript)
+			if v := m.views[it.ID]; v != nil {
+				v.web = cloneWebConfig(c)
+			}
+			if data, err := encodeWebConfig(c); err == nil {
+				m.o.op("web", it.ID).str(data)
+			}
 		}
 	case driver.ItemWebCookies:
 		m.s.dispatch(driver.NoWebCookies(it))
 	case driver.ItemWebCommand:
-		m.o.op("wcmd", it.ID).num(float64(it.WebCommand)).str(it.Value)
+		switch it.WebCommand {
+		case driver.WebPostMessage:
+			m.o.op("wcmd", it.ID).num(float64(it.WebCommand)).str(driver.WebMessageScript(it.Value))
+		case driver.WebLoad:
+			src, _ := it.Data.(*driver.WebSource)
+			if data, err := encodeWebLoad(src); err == nil {
+				m.o.op("wcmd", it.ID).num(float64(it.WebCommand)).str(data)
+			}
+		case driver.WebSendInput:
+			// Env.CanSendInput is false on HarmonyOS.
+		default:
+			m.o.op("wcmd", it.ID).num(float64(it.WebCommand)).str(it.Value)
+		}
+	case driver.ItemNative:
+		if it.Native == nil {
+			break
+		}
+		if it.Native.Component != driver.TabBarComponent {
+			if m.droppedNative == nil {
+				m.droppedNative = map[string]bool{}
+			}
+			if !m.droppedNative[it.Native.Component] {
+				m.droppedNative[it.Native.Component] = true
+				log.Printf("nsgo harmony: native component %q has no renderer", it.Native.Component)
+			}
+			break
+		}
+		if v := m.views[it.ID]; v != nil {
+			if v.tabBar == nil {
+				v.tabBar = &harmonyTabBar{}
+			}
+			if m.s != nil {
+				v.tabBar.spec.Dark = m.s.env.Dark
+			}
+			v.tabBar.applyProps(it.Native.Props, func(d *driver.Drawing) string {
+				return canvasJSON(d, d.Ops, false)
+			})
+			m.emitTabBar(v)
+		}
 	case driver.ItemScreen:
 		if c := it.Screen; c != nil {
 			if v := m.views[it.ID]; v != nil {
@@ -967,12 +1107,12 @@ func holds(b driver.Bounds, p driver.Point) bool {
 	return p.X >= b.Origin.X && p.Y >= b.Origin.Y && p.X < b.Origin.X+b.Size.Width && p.Y < b.Origin.Y+b.Size.Height
 }
 
-// inScrollViewports reports whether p is inside the viewport of every scroll view around v.
+// inScrollViewports reports whether p is inside the bounds of every scroll view or Overflow: Hidden clipping ancestor around v.
 func (m *mounter) inScrollViewports(v *view, p driver.Point) bool {
 	seen := map[driver.NodeID]bool{v.id: true}
 	for a := m.views[v.parent]; a != nil && !seen[a.id]; a = m.views[a.parent] {
 		seen[a.id] = true
-		if a.kind != driver.KindScroll {
+		if a.kind != driver.KindScroll && !a.style.Clip {
 			continue
 		}
 		if b, _ := m.surfaceBounds(a); !holds(b, p) {

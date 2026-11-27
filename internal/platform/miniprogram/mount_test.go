@@ -53,7 +53,7 @@ func (h *fakeHost) imagePixels(_ driver.NodeID, pixels *image.RGBA, tint driver.
 }
 func (h *fakeHost) setClipboard(text string) { h.clipboard = append(h.clipboard, text) }
 
-func (h *fakeHost) paint(_ driver.NodeID, _ []driver.DrawOp, _ driver.Size, scale float64, smooth bool) string {
+func (h *fakeHost) paint(_ driver.NodeID, _ *driver.Drawing, _ []driver.DrawOp, _ driver.Size, scale float64, smooth bool) string {
 	h.paints = append(h.paints, fakePaint{scale, smooth})
 	return "data:image/png;base64,"
 }
@@ -248,6 +248,32 @@ func TestModalsAreAnimatedInAndBackGoesThroughTheApp(t *testing.T) {
 	}
 	if len(h.services) != 1 || h.services[0] != driver.ItemAlert {
 		t.Fatalf("services = %v", h.services)
+	}
+}
+
+func TestBackPressedRearmsHistory(t *testing.T) {
+	m, h := mounted()
+	m.mount(&driver.MountBatch{Items: []driver.MountItem{{Kind: driver.ItemHistory, Count: 2}}})
+	if bk := h.ops("bk"); !slices.Equal(bk, []string{"[0,true]"}) {
+		t.Fatalf("initial back ops = %v, want [[0,true]]", bk)
+	}
+	// First back press clears m.back so a remaining history entry re-arms the container.
+	m.backPressed()
+	if len(h.events) != 1 || h.events[0].Kind != driver.EventBack {
+		t.Fatalf("events after first back = %+v, want [EventBack]", h.events)
+	}
+	m.mount(&driver.MountBatch{Items: []driver.MountItem{{Kind: driver.ItemHistory, Count: 1}}})
+	if bk := h.ops("bk"); !slices.Equal(bk, []string{"[0,true]", "[0,true]"}) {
+		t.Fatalf("re-armed back ops = %v, want two [0,true] ops", bk)
+	}
+	// Second back press drops history to 0: m.back is already false, so no redundant op.
+	m.backPressed()
+	m.mount(&driver.MountBatch{Items: []driver.MountItem{{Kind: driver.ItemHistory, Count: 0}}})
+	if bk := h.ops("bk"); !slices.Equal(bk, []string{"[0,true]", "[0,true]"}) {
+		t.Fatalf("final back ops = %v, want no extra op at depth 0", bk)
+	}
+	if len(h.events) != 2 || h.events[1].Kind != driver.EventBack {
+		t.Fatalf("events after second back = %+v, want two EventBack", h.events)
 	}
 }
 

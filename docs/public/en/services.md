@@ -383,6 +383,37 @@ iOS uses a system background URLSession that continues transfers while the app i
 
 Register `OnDownloadUpdate` again when the app starts to see active tasks and saved results. Use `p.Task.Forget()` after handling a final result. Android can stop the service, for example when its foreground transfer time expires. The app then receives `DownloadInterrupted`. On Windows, Linux, tvOS, watchOS and the web, `Download` returns `ErrDownloadUnavailable`.
 
+## Android dataSync keep-alive
+
+Apps that run their own Go transfer engine (such as resumable `net/http` downloads, chunked uploads or sync queues) can keep Android's Go process alive across backgrounding and Activity destruction with `mobile.StartDataSync`. Enable `android.data_sync: true` in `nsgo.yaml` to declare `DataSyncService` (`foregroundServiceType="dataSync"`) together with `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC` and `POST_NOTIFICATIONS`.
+
+```go
+ds, err := mobile.StartDataSync(mobile.DataSyncOptions{
+	Notification: mobile.DataSyncNotification{
+		Title:         "Syncing files",
+		Body:          "Preparing transfer...",
+		Indeterminate: true,
+	},
+	OnTimeout: func() {
+		flushTransferCheckpoints()
+	},
+})
+if err != nil {
+	// mobile.ErrDataSyncNotAllowed when started outside an eligible foreground state;
+	// mobile.ErrDataSyncUnavailable when android.data_sync is not enabled.
+	return err
+}
+defer ds.Stop()
+ds.Update(mobile.DataSyncNotification{
+	Title:   "Syncing files",
+	Body:    "archive.zip",
+	Current: sentBytes,
+	Total:   totalBytes,
+})
+```
+
+Sessions are reference-counted: concurrent transfers can each call `mobile.StartDataSync` and share one foreground service and progress notification until the last handle calls `Stop()`. Set `Total > 0` for determinate progress, `Indeterminate: true` (or `Total < 0`) for an indeterminate progress bar, or `Total == 0` with `Indeterminate: false` for text only. On Android 15 (API 35+), `OnTimeout` runs when Android's `dataSync` foreground quota expires so the app can flush checkpoints before the service stops. To hold a `PARTIAL_WAKE_LOCK` during screen-off transfers, add `WAKE_LOCK` to `android.permissions` and set `WakeLock: true`. `mobile.DataSyncSupported()` checks whether the Android service is declared; on non-Android platforms `mobile.StartDataSync` returns a safe no-op handle with a nil error.
+
 ## Speech and the lifecycle
 
 `cx.StartSpeech` recognizes speech with the system's recognizer where `cx.Env().CanRecognizeSpeech()` says it exists (macOS, iOS, Android, Windows and browsers exposing `SpeechRecognition` or `webkitSpeechRecognition`), and answers with the transcript as it changes. On Apple platforms declare `NSMicrophoneUsageDescription` and `NSSpeechRecognitionUsageDescription` in `apple.info`; on Android add `RECORD_AUDIO` to `android.permissions`. In a headless test, `app.Speech` holds a `nsgotest.SpeechSession` while recognition is active. Use `app.HearSpeech` and `app.EndSpeech` to deliver results.
@@ -544,7 +575,7 @@ Use `audio.SetSoundLimits(cx, audio.SoundLimits{MaxSounds: 200, MaxDuration: 20 
 
 ## Speaking text
 
-`cx.Speak` reads text aloud in the system's voice for a language where `cx.Env().CanSpeak()` says the platform speaks: macOS, iOS, tvOS, Android, Windows, the web and Linux with speech-dispatcher. One utterance speaks at a time: another `Speak` cuts the one speaking, and so do `cx.StopSpeaking` and the end of the scope that spoke it. `done` hears once how it ended: finished, stopped, or failed with a `core.SpeakError`, such as `core.SpeakLanguageUnavailable` when no voice installed speaks the language.
+`cx.Speak` reads text aloud in the system's voice for a language where `cx.Env().CanSpeak()` says the platform speaks: macOS, iOS, tvOS, watchOS, Android, Windows, the web and Linux with speech-dispatcher. One utterance speaks at a time: another `Speak` cuts the one speaking, and so do `cx.StopSpeaking` and the end of the scope that spoke it. `done` hears once how it ended: finished, stopped, or failed with a `core.SpeakError`, such as `core.SpeakLanguageUnavailable` when no voice installed speaks the language.
 
 ```go
 cx.Speak("Guten Morgen", core.Voice{Lang: "de-DE", Rate: 0.8}, func(stopped bool, err error) {
@@ -553,6 +584,8 @@ cx.Speak("Guten Morgen", core.Voice{Lang: "de-DE", Rate: 0.8}, func(stopped bool
 ```
 
 `Rate` and `Pitch` run from 0.5 to 2, 1 being the voice's own. `cx.Voices("ja", ...)` lists the voices installed for a language, so the app can ask the user to install one it lacks or let them pick one, whose `ID` goes in `core.Voice`. Browsers speak only after the user has pressed something on the page, and fail with `core.SpeakNotAllowed` before. A TSX package's Go components speak only with the `text_to_speech` capability.
+
+On mini programs, core WeChat (`wx`), QQ (`qq`), consumer Alipay (`my`) and Douyin (`tt`) provide no built-in client text-to-speech API, so `cx.Env().CanSpeak()` is false by default. On WeChat, an app that enables WeChat's official `WechatSI` plugin (`wx069ba97219f66d99`) in the WeChat MP console and sets `miniprogram.wechat_speech_plugin` (such as `"0.3.5"`) in `nsgo.yaml` gets `zh-CN` and `en-US` speech through `WechatSI` and `InnerAudioContext` (`Rate` from 0.5 to 2; `Pitch` is ignored); `CanSpeak()` becomes true only when the plugin is loaded at runtime.
 
 ## Looping audio
 

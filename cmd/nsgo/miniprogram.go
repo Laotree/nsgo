@@ -88,7 +88,11 @@ func miniProgramPlatformOf(target string) (miniProgramPlatform, bool) {
 }
 
 // miniprogramSubpackage is the subpackage the module is in.
-const miniprogramSubpackage = "nsgo-app"
+const (
+	miniprogramSubpackage      = "nsgo-app"
+	wechatSpeechPluginName     = "WechatSI"
+	wechatSpeechPluginProvider = "wx069ba97219f66d99"
+)
 
 // miniprogramTags are the build's tags: the backend, and no shader
 // compiler, as the render layer draws no shader.
@@ -108,9 +112,9 @@ func miniProgramJSONEnv(ctx context.Context, dir string, env []string) ([]string
 // still too large for its package, again without inlining.
 func buildMiniProgram(ctx context.Context, p *project, mp miniProgramPlatform, dir string) error {
 	// Release builds (nsgo build, or nsgo dev -release) omit the dev client; dev builds keep it so DevTools, -highlight, -layout and -trace reach mini programs, still stripped with -s -w to fit the 2 MB package cap.
-	if p.Release && p.Dev.Client {
-		p.Dev.Client = false
-		defer func() { p.Dev.Client = true }()
+	if p.Release && p.devClient {
+		p.devClient = false
+		defer func() { p.devClient = true }()
 	}
 	tmp, err := os.MkdirTemp("", "nsgo-miniprogram")
 	if err != nil {
@@ -143,7 +147,7 @@ func buildMiniProgram(ctx context.Context, p *project, mp miniProgramPlatform, d
 	}
 	if len(module) > packageLimit {
 		// nsgo dev -automation links its agent, which the developer tool's simulator may still load past the limit; builds without it leave it out.
-		if !p.Dev.Automation || p.Release {
+		if !p.devAutomation || p.Release {
 			return fmt.Errorf("the module is %s compressed, past the %s a mini program's package holds; "+
 				"leave out what the app does not show on phones, such as the editor, the terminal or TSX",
 				formatSize(int64(len(module))), formatSize(packageLimit))
@@ -198,6 +202,7 @@ type miniprogramConfig struct {
 	Wasm             string            `json:"wasm"`
 	Subpackage       string            `json:"subpackage"`
 	CustomNavigation bool              `json:"customNavigation"`
+	SpeechPlugin     string            `json:"speechPlugin,omitempty"`
 	Env              map[string]string `json:"env"`
 }
 
@@ -238,6 +243,9 @@ func writeMiniProgram(p *project, mp miniProgramPlatform, dir string, module []b
 	}
 	cfg := miniprogramConfig{Platform: mp.name, Wasm: "/" + miniprogramSubpackage + "/app.wasm.br", Subpackage: miniprogramSubpackage,
 		CustomNavigation: p.MiniProgram.CustomNavigation, Env: map[string]string{}}
+	if mp.name == "wechat" && strings.TrimSpace(p.MiniProgram.WeChatSpeechPlugin) != "" {
+		cfg.SpeechPlugin = wechatSpeechPluginName
+	}
 	if p.Updates.Channel != "" {
 		cfg.Env["NSGO_UPDATE_CHANNEL"] = p.Updates.Channel
 	}
@@ -334,6 +342,14 @@ func (mp miniProgramPlatform) app(p *project) map[string]any {
 		if p.Appearance == "" {
 			app["darkmode"] = false
 		}
+		if v := strings.TrimSpace(p.MiniProgram.WeChatSpeechPlugin); v != "" {
+			app["plugins"] = map[string]any{
+				wechatSpeechPluginName: map[string]any{
+					"version":  v,
+					"provider": wechatSpeechPluginProvider,
+				},
+			}
+		}
 	}
 	return app
 }
@@ -406,7 +422,7 @@ func configureMiniProgramDev(p *project, opts devOptions) {
 		p.devURL, p.devToken = "", ""
 	}
 	if opts.release {
-		p.Dev.Client = false
+		p.devClient = false
 	}
 }
 

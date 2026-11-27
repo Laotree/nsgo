@@ -77,31 +77,78 @@ type gInterfaceInfo struct {
 
 func bindAccess() {
 	purego.RegisterLibFunc(&gtkAccessibleRelationGetType, gtkLib, "gtk_accessible_relation_get_type")
-	purego.RegisterLibFunc(&gtkAccessibleUpdateRelationValue, gtkLib, "gtk_accessible_update_relation_value")
-	purego.RegisterLibFunc(&gtkAccessibleResetRelation, gtkLib, "gtk_accessible_reset_relation")
+	bindSyscall(&gtkAccessibleUpdateRelationValue, gtkLib, "gtk_accessible_update_relation_value")
+	bindSyscall(&gtkAccessibleResetRelation, gtkLib, "gtk_accessible_reset_relation")
 	purego.RegisterLibFunc(&gtkAccessibleListGetType, gtkLib, "gtk_accessible_list_get_type")
-	purego.RegisterLibFunc(&gtkAccessibleListNewFromList, gtkLib, "gtk_accessible_list_new_from_list")
-	purego.RegisterLibFunc(&gListAppend, glibLib, "g_list_append")
-	purego.RegisterLibFunc(&gListFree, glibLib, "g_list_free")
-	purego.RegisterLibFunc(&gValueSetString, gobjectLib, "g_value_set_string")
+	bindSyscall(&gtkAccessibleListNewFromList, gtkLib, "gtk_accessible_list_new_from_list")
+	bindSyscall(&gListAppend, glibLib, "g_list_append")
+	bindSyscall(&gListFree, glibLib, "g_list_free")
+	bindSyscall(&gValueSetString, gobjectLib, "g_value_set_string")
 	purego.RegisterLibFunc(&gValueSetDouble, gobjectLib, "g_value_set_double")
-	purego.RegisterLibFunc(&gValueSetBoolean, gobjectLib, "g_value_set_boolean")
-	purego.RegisterLibFunc(&gValueSetInt, gobjectLib, "g_value_set_int")
+	bindSyscall(&gValueSetBoolean, gobjectLib, "g_value_set_boolean")
+	bindSyscall(&gValueSetInt, gobjectLib, "g_value_set_int")
 	purego.RegisterLibFunc(&gTypeClassRef, gobjectLib, "g_type_class_ref")
 	purego.RegisterLibFunc(&gEnumGetValueByNick, gobjectLib, "g_enum_get_value_by_nick")
 	purego.RegisterLibFunc(&gtkAccessibleRoleGetType, gtkLib, "gtk_accessible_role_get_type")
 	purego.RegisterLibFunc(&gtkAccessiblePropertyGetType, gtkLib, "gtk_accessible_property_get_type")
 	purego.RegisterLibFunc(&gtkAccessibleStateGetType, gtkLib, "gtk_accessible_state_get_type")
 	purego.RegisterLibFunc(&gtkAccessibleTristateGetType, gtkLib, "gtk_accessible_tristate_get_type")
-	purego.RegisterLibFunc(&gtkAccessibleUpdatePropertyValue, gtkLib, "gtk_accessible_update_property_value")
-	purego.RegisterLibFunc(&gtkAccessibleUpdateStateValue, gtkLib, "gtk_accessible_update_state_value")
-	purego.RegisterLibFunc(&gtkAccessibleResetProperty, gtkLib, "gtk_accessible_reset_property")
-	purego.RegisterLibFunc(&gtkAccessibleResetState, gtkLib, "gtk_accessible_reset_state")
+	bindSyscall(&gtkAccessibleUpdatePropertyValue, gtkLib, "gtk_accessible_update_property_value")
+	bindSyscall(&gtkAccessibleUpdateStateValue, gtkLib, "gtk_accessible_update_state_value")
+	bindSyscall(&gtkAccessibleResetProperty, gtkLib, "gtk_accessible_reset_property")
+	bindSyscall(&gtkAccessibleResetState, gtkLib, "gtk_accessible_reset_state")
 	purego.RegisterLibFunc(&gtkAccessibleAnnounce, gtkLib, "gtk_accessible_announce")
 	purego.RegisterLibFunc(&gtkLabelGetType, gtkLib, "gtk_label_get_type")
 	purego.RegisterLibFunc(&gtkAccessibleRangeGetType, gtkLib, "gtk_accessible_range_get_type")
 	purego.RegisterLibFunc(&gTypeAddInterfaceStatic, gobjectLib, "g_type_add_interface_static")
 }
+
+// accEnums caches GTK's frequently used accessibility enum values so
+// updateAccess never performs nested map lookups on hot text/prop updates.
+// enumsPtr tracks the backing map pointer of enums so unit tests that swap
+// enums invalidate the cache automatically.
+var accEnums struct {
+	ready           bool
+	enumsPtr        uintptr
+	propLabel       int32
+	propDescription int32
+	propValueText   int32
+	propLevel       int32
+	propMultiSel    int32
+	propValueMin    int32
+	propValueMax    int32
+	propValueNow    int32
+	states          [8]int32
+	tristate        [3]int32
+}
+
+func initAccessEnums() {
+	ptr := *(*uintptr)(unsafe.Pointer(&enums))
+	if accEnums.ready && accEnums.enumsPtr == ptr {
+		return
+	}
+	accEnums.propLabel = enumValue("property", "label")
+	accEnums.propDescription = enumValue("property", "description")
+	accEnums.propValueText = enumValue("property", "value-text")
+	accEnums.propLevel = enumValue("property", "level")
+	accEnums.propMultiSel = enumValue("property", "multi-selectable")
+	accEnums.propValueMin = enumValue("property", "value-min")
+	accEnums.propValueMax = enumValue("property", "value-max")
+	accEnums.propValueNow = enumValue("property", "value-now")
+	for i, nick := range [...]string{"disabled", "selected", "checked", "pressed", "expanded", "hidden", "busy", "invalid"} {
+		accEnums.states[i] = enumValue("state", nick)
+	}
+	for i, nick := range [...]string{"false", "true", "mixed"} {
+		accEnums.tristate[i] = enumValue("tristate", nick)
+	}
+	accEnums.enumsPtr = *(*uintptr)(unsafe.Pointer(&enums))
+	accEnums.ready = accEnums.enumsPtr != 0
+}
+
+// defaultAccessStates matches a freshly constructed GtkWidget's initial
+// GtkAccessible state values: boolean states false (0) and optional/tristate
+// states unset (-1).
+var defaultAccessStates = [8]int8{0, -1, -1, -1, -1, 0, 0, 0}
 
 // enums are GTK's accessibility enums by nick, read once from GLib's type
 // system rather than copied: their values grew between GTK releases.
@@ -110,6 +157,45 @@ var enums map[string]map[string]int32
 // enumValue returns the value of nick in GTK's enum kind ("role",
 // "property", "state", "tristate"); -1 for one this GTK lacks.
 func enumValue(kind, nick string) int32 {
+	if m := enums[kind]; m != nil {
+		if v, ok := m[nick]; ok {
+			return v
+		}
+	}
+	if gTypeClassRef == nil || gEnumGetValueByNick == nil {
+		return -1
+	}
+	var t uintptr
+	switch kind {
+	case "role":
+		if gtkAccessibleRoleGetType == nil {
+			return -1
+		}
+		t = gtkAccessibleRoleGetType()
+	case "property":
+		if gtkAccessiblePropertyGetType == nil {
+			return -1
+		}
+		t = gtkAccessiblePropertyGetType()
+	case "state":
+		if gtkAccessibleStateGetType == nil {
+			return -1
+		}
+		t = gtkAccessibleStateGetType()
+	case "relation":
+		if gtkAccessibleRelationGetType == nil {
+			return -1
+		}
+		t = gtkAccessibleRelationGetType()
+	case "tristate":
+		if gtkAccessibleTristateGetType == nil {
+			return -1
+		}
+		t = gtkAccessibleTristateGetType()
+	}
+	if t == 0 {
+		return -1
+	}
 	if enums == nil {
 		enums = map[string]map[string]int32{}
 	}
@@ -117,22 +203,6 @@ func enumValue(kind, nick string) int32 {
 	if m == nil {
 		m = map[string]int32{}
 		enums[kind] = m
-	}
-	if v, ok := m[nick]; ok {
-		return v
-	}
-	var t uintptr
-	switch kind {
-	case "role":
-		t = gtkAccessibleRoleGetType()
-	case "property":
-		t = gtkAccessiblePropertyGetType()
-	case "state":
-		t = gtkAccessibleStateGetType()
-	case "relation":
-		t = gtkAccessibleRelationGetType()
-	case "tristate":
-		t = gtkAccessibleTristateGetType()
 	}
 	v := int32(-1)
 	if e := gEnumGetValueByNick(gTypeClassRef(t), cstr(nick)); e != nil {
@@ -187,28 +257,43 @@ func pressable(m driver.EventMask) bool {
 // prepareRoles finds the roles of the views b creates, from its props and
 // events, before they are made.
 func (w *window) prepareRoles(b *driver.MountBatch) {
+	if len(w.roles) > 0 {
+		clear(w.roles)
+	}
 	type draft struct {
 		kind   driver.ViewKind
 		props  *driver.ViewProps
 		events driver.EventMask
 	}
-	drafts := map[driver.NodeID]*draft{}
+	var drafts map[driver.NodeID]*draft
 	for i := range b.Items {
 		it := &b.Items[i]
 		switch it.Kind {
 		case driver.ItemCreate:
+			if drafts == nil {
+				drafts = map[driver.NodeID]*draft{}
+			}
 			drafts[it.ID] = &draft{kind: it.View}
 		case driver.ItemViewProps:
-			if d := drafts[it.ID]; d != nil {
-				d.props = it.ViewProps
+			if drafts != nil {
+				if d := drafts[it.ID]; d != nil {
+					d.props = it.ViewProps
+				}
 			}
 		case driver.ItemEvents:
-			if d := drafts[it.ID]; d != nil {
-				d.events = it.Events
+			if drafts != nil {
+				if d := drafts[it.ID]; d != nil {
+					d.events = it.Events
+				}
 			}
 		}
 	}
-	w.roles = map[driver.NodeID]int32{}
+	if len(drafts) == 0 {
+		return
+	}
+	if w.roles == nil {
+		w.roles = map[driver.NodeID]int32{}
+	}
 	none := driver.ViewProps{}
 	for id, d := range drafts {
 		p := d.props
@@ -293,19 +378,20 @@ func (w *window) updateAccess(v *view) bool {
 		return false
 	}
 	v.access = n
+	initAccessEnums()
 	acc := v.widget
-	setString := func(nick, s, was string) {
-		if s == was && old.set {
+	setString := func(prop int32, s, was string) {
+		if s == was && (old.set || s == "") {
 			return
 		}
-		setAccessibleString(acc, nick, s)
+		setAccessiblePropString(acc, prop, s)
 	}
-	setString("label", n.label, old.label)
-	setString("description", n.description, old.description)
-	setString("value-text", n.valueText, old.valueText)
+	setString(accEnums.propLabel, n.label, old.label)
+	setString(accEnums.propDescription, n.description, old.description)
+	setString(accEnums.propValueText, n.valueText, old.valueText)
 	if n.level != old.level {
 		// GTK_ACCESSIBLE_PROPERTY_LEVEL takes a 1-based int, reset when 0.
-		if prop := enumValue("property", "level"); prop >= 0 {
+		if prop := accEnums.propLevel; prop >= 0 {
 			if n.level > 0 {
 				var val gValue
 				gValueInit(uintptr(unsafe.Pointer(&val)), gTypeInt)
@@ -319,37 +405,46 @@ func (w *window) updateAccess(v *view) bool {
 	}
 	if n.multiSelectable != old.multiSelectable {
 		// GTK_ACCESSIBLE_PROPERTY_MULTI_SELECTABLE, whose nick has a hyphen.
-		prop := enumValue("property", "multi-selectable")
-		if n.multiSelectable {
-			var val gValue
-			gValueInit(uintptr(unsafe.Pointer(&val)), gTypeBoolean)
-			gValueSetBoolean(&val, 1)
-			gtkAccessibleUpdatePropertyValue(acc, 1, &prop, &val)
-			gValueUnset(uintptr(unsafe.Pointer(&val)))
-		} else {
-			gtkAccessibleResetProperty(acc, prop)
+		if prop := accEnums.propMultiSel; prop >= 0 {
+			if n.multiSelectable {
+				var val gValue
+				gValueInit(uintptr(unsafe.Pointer(&val)), gTypeBoolean)
+				gValueSetBoolean(&val, 1)
+				gtkAccessibleUpdatePropertyValue(acc, 1, &prop, &val)
+				gValueUnset(uintptr(unsafe.Pointer(&val)))
+			} else {
+				gtkAccessibleResetProperty(acc, prop)
+			}
 		}
 	}
 	if n.ranged != old.ranged || n.min != old.min || n.max != old.max || n.now != old.now {
-		for i, nick := range []string{"value-min", "value-max", "value-now"} {
-			prop := enumValue("property", nick)
+		props := [3]int32{accEnums.propValueMin, accEnums.propValueMax, accEnums.propValueNow}
+		vals := [3]float32{n.min, n.max, n.now}
+		for i, prop := range props {
+			if prop < 0 {
+				continue
+			}
 			if !n.ranged {
 				gtkAccessibleResetProperty(acc, prop)
 				continue
 			}
 			var val gValue
 			gValueInit(uintptr(unsafe.Pointer(&val)), gTypeDouble)
-			gValueSetDouble(&val, float64([]float32{n.min, n.max, n.now}[i]))
+			gValueSetDouble(&val, float64(vals[i]))
 			gtkAccessibleUpdatePropertyValue(acc, 1, &prop, &val)
 			gValueUnset(uintptr(unsafe.Pointer(&val)))
 		}
 	}
-	for i, nick := range []string{"disabled", "selected", "checked", "pressed", "expanded", "hidden", "busy", "invalid"} {
+	prevStates := old.states
+	if !old.set {
+		prevStates = defaultAccessStates
+	}
+	for i := range n.states {
 		s := n.states[i]
-		if old.set && s == old.states[i] {
+		if s == prevStates[i] {
 			continue
 		}
-		state := enumValue("state", nick)
+		state := accEnums.states[i]
 		if state < 0 {
 			continue
 		}
@@ -358,13 +453,11 @@ func (w *window) updateAccess(v *view) bool {
 			continue
 		}
 		var val gValue
-		switch nick {
-		case "checked", "pressed":
-			// GTK reads a tristate as an int.
+		switch i {
+		case 2, 3: // checked, pressed: GTK reads a tristate as an int.
 			gValueInit(uintptr(unsafe.Pointer(&val)), gTypeInt)
-			gValueSetInt(&val, enumValue("tristate", [...]string{"false", "true", "mixed"}[s]))
-		case "selected", "expanded", "invalid":
-			// GTK collects a boolean state that may be undefined (selected and expanded) with g_value_get_int, as it does GtkAccessibleInvalidState, whose true is 1; a boolean GValue there is rejected and read as false.
+			gValueSetInt(&val, accEnums.tristate[s])
+		case 1, 4, 7: // selected, expanded, invalid: GTK collects with g_value_get_int.
 			gValueInit(uintptr(unsafe.Pointer(&val)), gTypeInt)
 			gValueSetInt(&val, int32(s))
 		default:
@@ -375,18 +468,17 @@ func (w *window) updateAccess(v *view) bool {
 		gValueUnset(uintptr(unsafe.Pointer(&val)))
 	}
 	if n.testID != old.testID {
-		name := n.testID
-		if name == "" {
-			name = "NsgoView"
+		if n.testID == "" {
+			gtkWidgetSetName(v.widget, cstrNsgoViewName)
+		} else {
+			gtkWidgetSetName(v.widget, cstr(n.testID))
 		}
-		gtkWidgetSetName(v.widget, cstr(name))
 	}
 	return old.set && n.label != old.label
 }
 
-// setAccessibleString sets string accessible property nick on acc, or resets it when s is empty.
-func setAccessibleString(acc uintptr, nick, s string) {
-	prop := enumValue("property", nick)
+// setAccessiblePropString sets string accessible property prop on acc, or resets it when s is empty.
+func setAccessiblePropString(acc uintptr, prop int32, s string) {
 	if prop < 0 {
 		return
 	}
@@ -399,6 +491,11 @@ func setAccessibleString(acc uintptr, nick, s string) {
 	gValueSetString(&val, cstr(s))
 	gtkAccessibleUpdatePropertyValue(acc, 1, &prop, &val)
 	gValueUnset(uintptr(unsafe.Pointer(&val)))
+}
+
+// setAccessibleString sets string accessible property nick on acc, or resets it when s is empty.
+func setAccessibleString(acc uintptr, nick, s string) {
+	setAccessiblePropString(acc, enumValue("property", nick), s)
 }
 
 // updateEditorPlaceholder keeps a multiline GtkTextView's GtkAccessible

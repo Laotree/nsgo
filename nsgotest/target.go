@@ -123,6 +123,7 @@ func (t *target) observe(surface uint32, b *driver.MountBatch) {
 	if t.lost != "" || !t.windowed && surface != 0 {
 		return
 	}
+	driver.RetainBatchDrawings(b)
 	u := targetUpdate{surface: surface, batch: b, aside: t.windowed && surface == 0}
 	if u.aside {
 		for _, it := range b.Items {
@@ -188,8 +189,12 @@ func (t *target) applyLive(b *driver.MountBatch) {
 		}
 		why, _, _ = strings.Cut(strings.TrimPrefix(why, "nsgotest: "), "\n")
 		t.mu.Lock()
+		dropped := t.updates
 		t.lost, t.updates = why, nil
 		t.mu.Unlock()
+		for _, u := range dropped {
+			driver.ReleaseBatchDrawings(u.batch)
+		}
 		log.Printf("nsgo: the automation stopped following a surface: %s", why)
 		fail(automation.Failed, "the automation stopped following the window: "+why)
 	}()
@@ -250,6 +255,8 @@ func (a *App) startTarget(view func(cx *core.Scope) core.Node, fn func(app *core
 		}
 		t.releaseHeld()
 		a.root.Dispose()
+		t.releaseUpdates()
+		a.releaseDrawings()
 	})
 	a.seed()
 	a.anim = driver.NewAnimator(func(driver.Event) {})
@@ -352,11 +359,26 @@ func (t *target) drainEvents() bool {
 	return events
 }
 
+func (t *target) releaseUpdates() {
+	t.mu.Lock()
+	dropped := t.updates
+	t.updates = nil
+	t.mu.Unlock()
+	for _, u := range dropped {
+		driver.ReleaseBatchDrawings(u.batch)
+	}
+}
+
 func (t *target) drain() bool {
 	t.mu.Lock()
 	updates := t.updates
 	t.updates = nil
 	t.mu.Unlock()
+	defer func() {
+		for _, u := range updates {
+			driver.ReleaseBatchDrawings(u.batch)
+		}
+	}()
 	for _, u := range updates {
 		if b := u.batch; b != nil {
 			t.a.traceBatch(b, 0)
@@ -466,6 +488,7 @@ func (t *target) applyOwn(b *driver.MountBatch) {
 func (t *target) mainClosed() {
 	a := t.a
 	t.surface = t.source
+	a.releaseDrawings()
 	a.views, a.rootID, a.Keymap, a.keyBindings = map[driver.NodeID]*View{}, 0, nil, nil
 	a.SystemGestures = core.SystemGestureOptions{}
 	delete(a.menus, nil)
@@ -1006,14 +1029,20 @@ func (t *target) scroll(v *View, d driver.Points) {
 // CapturePNG captures the app as the platform shows it and returns its PNG. On macOS, iOS and tvOS its pixels are sRGB. Headless runs skip the test because they have no native pixels.
 func (a *App) CapturePNG() []byte {
 	a.t.Helper()
+	png, _ := a.capturePNG()
+	return png
+}
+
+func (a *App) capturePNG() ([]byte, bool) {
+	a.t.Helper()
 	if a.target == nil {
 		a.t.Skip("nsgotest: no pixels headless; run under nsgo test -target")
 	}
-	png, err := a.target.screenshotPNG()
+	png, fallback, err := a.target.screenshotPNG()
 	if err != nil {
 		a.t.Fatalf("nsgotest: capture: %v", err)
 	}
-	return append([]byte(nil), png...)
+	return append([]byte(nil), png...), fallback
 }
 
 // Capture captures the app as the platform shows it and decodes its PNG. On macOS, iOS and tvOS its pixels are sRGB, regardless of the display's color space. Headless runs skip the test because they have no native pixels.
@@ -1040,11 +1069,14 @@ func (a *App) Screenshot(name string) {
 		a.t.Logf("nsgotest: no screenshot %q headless; nsgo test -target takes it", name)
 		return
 	}
-	png := a.CapturePNG()
+	png, fallback := a.capturePNG()
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(name))
 	// The tool saves it: the app may run on a phone, or in a browser. A device's log keeps lines of a few kilobytes, so it goes in chunks, each with the PNG's length and CRC-32, which the tool checks the joined chunks against: a log that drops or cuts lines, as HarmonyOS's hilog does when it throttles an app, fails the test instead of saving a corrupt image.
 	data := base64.StdEncoding.EncodeToString(png)
 	sum := fmt.Sprintf("%d:%08x", len(png), crc32.ChecksumIEEE(png))
+	if fallback {
+		sum += ":fallback"
+	}
 	const chunk = 3000
 	n := (len(data) + chunk - 1) / chunk
 	for i := range n {
@@ -1053,9 +1085,14 @@ func (a *App) Screenshot(name string) {
 }
 
 // screenshotPNG settles and captures the app as the platform shows it.
-func (t *target) screenshotPNG() ([]byte, error) {
+func (t *target) screenshotPNG() ([]byte, bool, error) {
 	t.settle()
-	return t.surface.Screenshot()
+	if detailed, ok := t.surface.(testhost.DetailedScreenshotSurface); ok {
+		res, err := detailed.ScreenshotDetailed()
+		return res.PNG, res.Fallback, err
+	}
+	png, err := t.surface.Screenshot()
+	return png, false, err
 }
 
 func pathHasParent(name string) bool {

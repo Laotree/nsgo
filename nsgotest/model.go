@@ -288,19 +288,23 @@ func (a *App) drawCanvas(v *View, d *driver.Drawing) {
 	if v == nil {
 		return
 	}
-	v.Drawing = d
+	if v.Drawing != d {
+		d.Retain()
+		v.Drawing.Release()
+		v.Drawing = d
+	}
 	v.ResolutionScale, v.CanvasSampling = float32(d.ResolutionScale()), d.Upscale
 	a.anim.BindCanvas(v.ID, d.Slots)
 	v.Ops = slices.Clone(a.anim.CanvasOps(v.ID, d))
 	pass := a.canvasImageUse
 	for i := range d.Ops {
-		if op := &d.Ops[i]; op.Image != nil {
-			a.touchCanvasImage(*op.Image, pass)
+		if img := d.Image(&d.Ops[i]); img != nil {
+			a.touchCanvasImage(*img, pass)
 		}
 	}
-	for i := range v.Ops {
-		if op := &v.Ops[i]; op.Image != nil && op.Image.Offscreen != nil {
-			a.recordOffscreen(op.Image.Offscreen, nil)
+	for i := range d.Images {
+		if d.Images[i].Offscreen != nil {
+			a.recordOffscreen(d.Images[i].Offscreen, nil)
 		}
 	}
 	kept := v.Children[:0]
@@ -315,6 +319,13 @@ func (a *App) drawCanvas(v *View, d *driver.Drawing) {
 		v.Children = append(v.Children, &View{Kind: KindView, Parent: v, Frame: n.Bounds, Node: n,
 			Style: ViewStyle{Opacity: 1},
 			Props: ViewProps{Role: n.Role, Label: n.Label, TestID: n.TestID, Selected: n.Selected}})
+	}
+}
+
+func (a *App) releaseDrawings() {
+	for _, v := range a.views {
+		v.Drawing.Release()
+		v.Drawing = nil
 	}
 }
 
@@ -348,9 +359,9 @@ func (a *App) recordOffscreen(off *driver.OffscreenCanvas, seen map[uint64]bool)
 			seen = map[uint64]bool{}
 		}
 		seen[off.ID] = true
-		for i := range s.Ops {
-			if op := &s.Ops[i]; op.Image != nil && op.Image.Offscreen != nil {
-				a.recordOffscreen(op.Image.Offscreen, seen)
+		for i := range off.Drawing.Images {
+			if off.Drawing.Images[i].Offscreen != nil {
+				a.recordOffscreen(off.Drawing.Images[i].Offscreen, seen)
 			}
 		}
 	}
@@ -580,6 +591,8 @@ func (a *App) apply(b *driver.MountBatch) {
 			created[it.ID] = true
 		case driver.ItemDelete:
 			if v != nil {
+				v.Drawing.Release()
+				v.Drawing = nil
 				if v.Kind == KindModal {
 					a.cancelModalPresent(it.ID)
 					if !v.modalDismissed {

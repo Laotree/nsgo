@@ -45,6 +45,8 @@ nsgo build
 
 `nsgo` 会拒绝此文件中的未知键，包括各配置段中拼写错误的键。`apple.info` 和 `macos.entitlements` 等自由格式映射仍可使用平台专属的键。
 
+使用 Go 编写的工具可以通过 `github.com/nsgo-dev/nsgo/project` 以与 `nsgo build` 一致的模式、校验和默认值读取 `nsgo.yaml`：`project.Load(dir)` 将文件严格解码为 `*project.Config`，相对 `dir` 解析 `Build.Output`（默认为 `dist`）等路径，且不发起任何网络或 Git 调用；`(*project.Config).Channel()` 返回实际生效的分发渠道（`updates.channel`，未设置且配置了 `updates.key` 时为 `direct`，否则为 `none`）。
+
 ```yaml
 name: Hello
 id: dev.example.hello   # 应用的 ID；省略时为 dev.nsgo. 加上 name 中的字母和数字
@@ -89,6 +91,7 @@ build:
 # android: { permissions: [REQUEST_INSTALL_PACKAGES] }  # 运行时所需之外的清单权限
 # android: { recording: true }  # microphone.RecordWAV 录音所用的麦克风服务，连同 RECORD_AUDIO、前台服务权限和 POST_NOTIFICATIONS；从 Android 13 起 RecordWAV 会一并申请后者以显示录音通知，用户拒绝时照常录音
 # android: { background_downloads: true }  # cx.Download 使用的 dataSync 前台服务
+# android: { data_sync: true }  # mobile.StartDataSync 使用的通用 dataSync 前台服务
 # android: { background_motion: true }  # 显式启用限时运动 shortService，流还需通知标题
 # android: { loopback_cleartext: true }  # 允许 APK 和 App Bundle 通过明文 HTTP 访问回环地址
 # windows: { command_line: true }  # 添加 <name>.com 控制台伴侣，把参数和标准流转给 <name>.exe；store 构建不含
@@ -173,6 +176,8 @@ nsgo add -dry-run github.com/acme/chart  # 只打印计划，什么也不写
 github.com/acme/chart
   module     github.com/acme/chart v1.3.0, published 2026-11-20
   owner      github.com/acme, the first module from it in go.mod
+  licenses   github.com/acme/chart: MIT
+             example.com/units: MIT
   next       import "github.com/acme/chart"
 
 example.com/hello
@@ -184,7 +189,7 @@ example.com/hello
 Apply these changes? [y/N]
 ```
 
-对每个模块，计划列出它的版本和发布日期，以及它的所有者：主机，在 github.com 这类代码托管站点上还有账号；`go.mod` 里还没有来自这个所有者的模块时会注明。适用时，接着列出撤回和弃用通知、没有发布标签的版本、对该模块的 `replace`，以及其根包的 import 行。然后是 `go.mod` 中改变的行（包括 `go` 和 `toolchain` 行）、此后会运行另一个版本的 `go tool` 命令、从模块自己的主机获取的模块，以及 `go.sum` 收下却未经校验和数据库检查的模块。`go get` 会把还没有包导入的模块标为 `// indirect`，有包导入它之后，`go mod tidy` 会去掉这个标记。
+对每个模块，计划列出它的版本和发布日期，以及它的所有者：主机，在 github.com 这类代码托管站点上还有账号；`go.mod` 里还没有来自这个所有者的模块时会注明。适用时，接着列出撤回和弃用通知、没有发布标签的版本、对该模块的 `replace`、引入的每个模块和原生库经分类器识别出的许可证（若注册表声明的许可证与识别结果不一致也会注明）、每个目标的原生库及其许可证和下载主机、在某目标上无法构建的包（例如构建约束排除了全部文件），以及其根包的 import 行。目标检查覆盖应用展开后的 `build.targets`，没有 `nsgo.yaml` 时检查本机目标。若模块带有 [`nsgo-module.yaml`](authoring/shipping.md#模块清单)，计划会改用它声明的 `import` 包、列出应用 `build.targets` 中其 `targets` 缺少的目标、连同 `nsgo add <module>#<name>` 命令列出它的 `components`，并在计划最后按行标记打印作者的 `notes`。然后是 `go.mod` 中改变的行（包括 `go` 和 `toolchain` 行）、此后会运行另一个版本的 `go tool` 命令、从模块自己的主机获取的模块，以及 `go.sum` 收下却未经校验和数据库检查的模块。`go get` 会把还没有包导入的模块标为 `// indirect`，有包导入它之后，`go mod tidy` 会去掉这个标记。
 
 在终端中，`add` 写入前会先询问，`-y` 则不经询问直接应用计划；不在终端中又没有 `-y` 时，它什么也不写，并以状态 1 退出。以 Ctrl+C 等方式中断时，`go.mod` 和 `go.sum` 保持原样，并以状态 130 退出。`go.mod` 已经依赖的模块保持原样，只打印其版本，除非输入了版本。
 
@@ -192,13 +197,14 @@ Apply these changes? [y/N]
 
 - 使用模块已在用的工具链并设置 `GOTOOLCHAIN=local`，因此不会下载或运行其他工具链；
 - 只经由 `GOPROXY` 中第一个 `direct` 之前列出的模块代理获取，`direct` 改为 `off`，因此只有 `GOPRIVATE` 或 `GONOPROXY` 标记的模块从它们自己的主机获取，`GONOSUMDB` 和 `GOAUTH` 保持不变；
-- 设置 `GOWORK=off`，因此在工作区中，它只为这个模块本身规划 `go.mod`，与 `GOWORK=off go get` 写出的一致，并在计划中注明。
+- `go get` 设置 `GOWORK=off`，因此在工作区中，它只为这个模块本身规划 `go.mod`，与 `GOWORK=off go get` 写出的一致，并在计划中注明；按目标列出依赖包时通过 `-overlay` 和 `-mod=readonly` 读取规划中的 `go.mod` 与 `go.sum`，因此同样可在工作区中运行并忽略 `vendor` 目录。
 
 无论是否给出 `-y`，`add` 都会拒绝：
 
 - 把 NSGo 的依赖移到伪版本或预发布版本，依赖 NSGo 某个提交的库就会这样做；要有意这样做，先运行 `go get github.com/nsgo-dev/nsgo@<版本>`；
 - 需要比模块的工具链更新的 Go 的模块；先用 `go get go@<版本>` 提高模块的 Go 版本；
-- 经由 `@latest` 这样的查询降低模块的版本；输入具体版本才会降低，计划称之为降级。
+- 经由 `@latest` 这样的查询降低模块的版本；输入具体版本才会降低，计划称之为降级；
+- 模块或原生库的许可证不满足应用的 `licenses` 策略（默认拒绝未识别或缺失的许可证文本，`licenses.copyleft: error` 下拒绝著佐权许可证），并给出应在 `nsgo.yaml` 中添加的 `licenses.allow` 条目或 `warn` 设置；`add` 不会修改策略。
 
 只有在规划之后 `go.mod` 和 `go.sum` 都没有改变时，它才写入这两个文件，各自先写入临时文件再改名覆盖；出错或被中断时，两个文件都恢复原样。有 `vendor` 目录的模块，计划会把 `go mod vendor` 列为下一步。
 
@@ -584,7 +590,7 @@ nsgo dev -target miniprogram_alipay
 | `miniprogram_alipay` | 支付宝 | [支付宝小程序开发者工具](https://opendocs.alipay.com/mini/ide/download)，限 macOS |
 | `miniprogram_douyin` | 抖音及字节系其他应用 | [抖音开发者工具](https://developer.open-douyin.com/docs/resource/zh-CN/mini-app/develop/developer-instrument/download/developer-instrument-update-and-download)，限 macOS |
 
-`miniprogram.appid` 按平台（`wechat`、`qq`、`alipay`、`douyin`）设置小程序的 AppID；没有时微信开发者工具以测试号预览，其他工具会要求填写。微信的 `-run` 和 `dev` 每次重新构建都会通过 CLI 关闭并自动打开项目，因此开发者工具会编译最新文件。此流程已用 2.01.2510290 版开发者工具检查。平台的导航栏显示应用的标题；开启 `custom_navigation` 后应用占满页面，安全区让它避开右上角的胶囊按钮。应用读到的是手机的操作系统，`Env.Simulated` 为 true，与网页的 `--nsgo-os` 相同：导航栈的页面显示自己的 `Header`，没有系统标题栏代替它。QQ、支付宝和抖音尚未在各自的工具中试过；支付宝暂不支持由应用处理返回、关键帧动画和键盘高度。
+`miniprogram.appid` 按平台（`wechat`、`qq`、`alipay`、`douyin`）设置小程序的 AppID；没有时微信开发者工具以测试号预览，其他工具会要求填写。微信的 `-run` 和 `dev` 每次重新构建都会通过 CLI 关闭并自动打开项目，因此开发者工具会编译最新文件。此流程已用 2.01.2510290 版开发者工具检查。平台的导航栏显示应用的标题；开启 `custom_navigation` 后应用占满页面，安全区让它避开右上角的胶囊按钮。在微信公众平台启用官方「微信同声传译」插件（`wx069ba97219f66d99`）后，可将 `miniprogram.wechat_speech_plugin` 设为插件版本（例如 `"0.3.5"`），在微信的 `app.json` 中声明该插件以启用 `Speak`。应用读到的是手机的操作系统，`Env.Simulated` 为 true，与网页的 `--nsgo-os` 相同：导航栈的页面显示自己的 `Header`，没有系统标题栏代替它。QQ、支付宝和抖音尚未在各自的工具中试过；支付宝暂不支持由应用处理返回、关键帧动画和键盘高度。
 
 小程序为试验性支持。小程序只运行 Go 应用，不运行 TSX，且各平台把应用压缩后的模块限制在 2 MB 以内：基于 `base` 的几个页面的应用放得下，`examples/gallery-miniprogram` 就是一例，用 `ui` 控件的应用暂时放不下，放不下时 `build` 会说明。着色器在小程序中不绘制，网页视图和原生组件暂不显示；应用自带字体文件（`loadFontFace`）、`TintColor` 着色图片、偏离基线的行内视图、文本选区与 `<video>` 视频播放已接入四个平台的模板，但尚未在各平台开发者工具中实测。
 

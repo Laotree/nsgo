@@ -13,10 +13,14 @@ import (
 // native views go into their host: the nearest modal around them, or the
 // root view. Each is a layout root of its own at its host's size.
 
+// overlaySpec and modalSpec hold Overlay's and Modal's fields without their Node methods so hoistNode does not keep their mountIn methods live when unused.
+type overlaySpec Overlay
+type modalSpec Modal
+
 type hoistNode struct {
 	host    *node
-	overlay *Overlay // nil for a modal or a fixed view
-	modal   *Modal
+	overlay *overlaySpec // nil for a modal or a fixed view
+	modal   *modalSpec
 	// fixed is a view hoisted while its position is Fixed.
 	fixed  bool
 	placed OverlayPosition
@@ -48,7 +52,7 @@ func (t *Tree) hold(n *node, height Points, space Size) {
 		return
 	}
 	n.hoist.held = height
-	n.lstyleOK = false
+	n.lstyle = nil
 	n.lstate.Invalidate()
 	t.layoutRoot(n, space, false)
 }
@@ -273,7 +277,7 @@ func (t *Tree) placeFrames() {
 
 func (t *Tree) hoist(n *node, h *hoistNode) {
 	h.host = t.hostOf(n)
-	n.hoist = h
+	n.ownExtra().hoist = h
 	addHosted(h.host, n)
 	t.addFrame(h.host)
 	t.reorder(h.host)
@@ -292,7 +296,7 @@ func addHosted(host, n *node) {
 			i--
 		}
 	}
-	host.hosted = slices.Insert(host.hosted, i, n)
+	host.ownExtra().hosted = slices.Insert(host.hosted, i, n)
 }
 
 // topmost reports whether h is a Topmost overlay's.
@@ -300,7 +304,8 @@ func (h *hoistNode) topmost() bool { return h.overlay != nil && h.overlay.Topmos
 
 func (t *Tree) mountOverlay(cx *Scope, parent *node, o Overlay) {
 	n := t.newNode(driver.KindView, parent, cx)
-	h := &hoistNode{overlay: &o}
+	spec := overlaySpec(o)
+	h := &hoistNode{overlay: &spec}
 	t.hoist(n, h)
 	t.bindClasses(cx, n, o.Class, o.ClassFunc)
 	t.bindStyle(cx, n, o.Style, o.StyleFunc)
@@ -320,10 +325,12 @@ func (t *Tree) mountOverlay(cx *Scope, parent *node, o Overlay) {
 			t.changed = true
 		})
 	}
-	n.h = handlers{pressOutside: o.OnPressOutside, cancel: o.OnCancel, transitionEnd: o.OnTransitionEnd,
-		mouseEnter: o.OnMouseEnter, mouseLeave: o.OnMouseLeave}
-	n.props = driver.ViewProps{Role: o.Role, Label: o.Label, TestID: o.TestID, PointerEvents: o.PointerEvents}
-	t.bindAccessibilityText(cx, n, &n.props.Label, o.LabelFunc)
+	n.setHandlers(handlers{pressOutside: o.OnPressOutside, cancel: o.OnCancel, transitionEnd: o.OnTransitionEnd,
+		mouseEnter: o.OnMouseEnter, mouseLeave: o.OnMouseLeave})
+	n.setProps(driver.ViewProps{Role: o.Role, Label: o.Label, TestID: o.TestID, PointerEvents: o.PointerEvents})
+	if o.LabelFunc != nil {
+		t.bindAccessibilityText(cx, n, &n.ownProps().Label, o.LabelFunc)
+	}
 	n.ownPointer = o.PointerEvents
 	for _, c := range o.Children {
 		t.mount(cx, n, c)
@@ -340,15 +347,19 @@ func (t *Tree) mountModal(cx *Scope, parent *node, m Modal) {
 	for s := n.owner; s != nil; s = s.parent {
 		owners = append(owners, s)
 	}
-	t.hoist(n, &hoistNode{modal: &m, reported: NewSignal[*modalSize](cx, nil), owners: owners})
+	spec := modalSpec(m)
+	t.hoist(n, &hoistNode{modal: &spec, reported: NewSignal[*modalSize](cx, nil), owners: owners})
 	// What it covers leaves the keymap (keyActive).
 	t.keysChanged = true
 	t.setClasses(n, m.Class)
 	t.bindStyle(cx, n, m.Style, m.StyleFunc)
-	n.props = driver.ViewProps{Role: m.Role, Label: m.Label, TestID: m.TestID}
-	t.bindAccessibilityText(cx, n, &n.props.Label, m.LabelFunc)
-	if n.props.Role == RoleNone {
-		n.props.Role = RoleDialog
+	role := m.Role
+	if role == RoleNone {
+		role = RoleDialog
+	}
+	n.setProps(driver.ViewProps{Role: role, Label: m.Label, TestID: m.TestID})
+	if m.LabelFunc != nil {
+		t.bindAccessibilityText(cx, n, &n.ownProps().Label, m.LabelFunc)
 	}
 	t.bindStatusBar(cx, n, m.StatusBar, m.StatusBarFunc)
 	if ts := m.TransitionShader; ts != nil {
@@ -400,7 +411,7 @@ func (t *Tree) placeHoisted(host *node) {
 			t.layoutRoot(n, size, false)
 			l := &n.lstate.Rounded
 			box := Size{Width: Points(l.Size.Width), Height: Points(l.Size.Height)}
-			t.setFrame(n, Bounds{Origin: t.onPixel(insetOrigin(&n.style, box, size, n.rtl)), Size: box})
+			t.setFrame(n, Bounds{Origin: t.onPixel(insetOrigin(n.style, box, size, n.rtl)), Size: box})
 		} else {
 			t.placeOverlay(n, host, size)
 		}
@@ -530,7 +541,7 @@ func (t *Tree) placeOverlay(n *node, host *node, hostSize Size) {
 	if !ok {
 		// Without an anchor, an overlay is placed as an absolute child of
 		// its host.
-		origin = t.onPixel(insetOrigin(&s, size, hostSize, n.rtl))
+		origin = t.onPixel(insetOrigin(s, size, hostSize, n.rtl))
 	} else {
 		safe := t.root.Env().safe.GetUntracked()
 		switch {
@@ -684,17 +695,19 @@ func (t *Tree) syncPosition(n *node) {
 		t.relayout(n)
 	case !fixed && n.hoist != nil && n.hoist.fixed:
 		host := n.hoist.host
-		host.hosted = slices.DeleteFunc(host.hosted, func(h *node) bool { return h == n })
+		host.ownExtra().hosted = slices.DeleteFunc(host.hosted, func(h *node) bool { return h == n })
 		t.reorder(host)
 		t.markLayout(host)
-		n.hoist, n.isRoot, n.fill, n.lstyleOK = nil, false, nil, false
+		ex := n.ownExtra()
+		ex.hoist, ex.fill = nil, nil
+		n.isRoot, n.lstyle = false, nil
 		n.lstate.Invalidate()
 		t.childrenChanged(n.parent)
 	}
 }
 
 // anchorRect returns ref's bounds in host's coordinates.
-func (t *Tree) anchorRect(o *Overlay, host *node) (Bounds, bool) {
+func (t *Tree) anchorRect(o *overlaySpec, host *node) (Bounds, bool) {
 	ref := o.Anchor
 	if ref == nil || ref.n == nil || ref.n.deleted {
 		return Bounds{}, false
@@ -991,7 +1004,7 @@ func (t *Tree) pressOutside(n *node, at Point) {
 		return
 	}
 	// Its anchor's whole box, what a press on it reaches.
-	if a, ok := t.anchorRect(&Overlay{Anchor: n.hoist.overlay.Anchor}, t.view); ok && a.Contains(at) {
+	if a, ok := t.anchorRect(&overlaySpec{Anchor: n.hoist.overlay.Anchor}, t.view); ok && a.Contains(at) {
 		return
 	}
 	// Above n are the overlays and modals after it in its host, and in each view around it that hosts some, those after the one it is in, or all of them around a frame's views, as the root view's Topmost overlays are above every modal, up to a sheet the platform presents, which shows above all its host holds.

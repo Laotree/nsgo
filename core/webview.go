@@ -1,11 +1,11 @@
 package core
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"maps"
+	"math/rand/v2"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -27,18 +27,18 @@ type WebView struct {
 	InjectedJavaScriptBeforeContentFunc func() string
 	// UserAgent replaces the platform's.
 	UserAgent string
-	// UserAgentSuffix is appended after a space to UserAgent, or to the platform's own user agent when UserAgent is empty, such as Version/26.0 Safari/605.1.15 for sites that want Safari's in WKWebView. Apple platforms add it to their own user agent only as the native view is first made, so changing it afterwards takes effect there only with UserAgent set. HarmonyOS, the web and mini programs ignore it, as they do UserAgent.
+	// UserAgentSuffix is appended after a space to UserAgent, or to the platform's own user agent when UserAgent is empty, such as Version/26.0 Safari/605.1.15 for sites that want Safari's in WKWebView. Apple platforms add it to their own user agent only as the native view is first made, so changing it afterwards takes effect there only with UserAgent set. The web and mini programs ignore it, as they do UserAgent.
 	UserAgentSuffix string
 	// Headers are sent with the initial URL request where the platform
 	// supports custom request headers. HTML sources do not make one.
 	Headers map[string]string
-	// Incognito keeps website data in memory for this view, apart from the app's other web views, on Apple platforms, Windows and Linux. Android has one cookie store and one set of website data per app, so there it only keeps the view from the HTTP cache, DOM storage and saved form data. It is read when the native view is first made; changing it afterwards has no effect.
+	// Incognito keeps website data in memory for this view, apart from the app's other web views, on Apple platforms, Windows, Linux and HarmonyOS. Android has one cookie store and one set of website data per app, so there it only keeps the view from the HTTP cache, DOM storage and saved form data. It is read when the native view is first made; changing it afterwards has no effect.
 	Incognito bool
 	// NoScroll keeps the user from scrolling the page; NoJavaScript keeps
 	// pages from running scripts.
 	NoScroll     bool
 	NoJavaScript bool
-	// Muted silences the entire web view on Windows and Linux, including frames and Web Audio. macOS 12 and iOS 15 or later suspend media playback until cleared. Other hosts keep their usual playback. The setting persists across navigations. MutedFunc updates it in place.
+	// Muted silences the entire web view on Windows, Linux and HarmonyOS, including frames and Web Audio. macOS 12 and iOS 15 or later suspend media playback until cleared. Other hosts keep their usual playback. The setting persists across navigations. MutedFunc updates it in place.
 	Muted     bool
 	MutedFunc func() bool
 	// PinchZoom lets the user magnify the page with a pinch: a trackpad's on macOS, a touchpad's or a touch screen's on Windows, where it also allows Ctrl with the wheel or with + and -, as a touchpad's pinch reaches the page as Ctrl with the wheel, and a touch screen's on Android. Without it the page keeps its size on those platforms. iOS zooms as the page's viewport says, and WebKitGTK on Linux and the browser on the web keep their own handling, having no switch for it.
@@ -140,8 +140,10 @@ type webNode struct {
 	// refused is the source Access refused last.
 	refused string
 	// evals are the Evaluates waiting for their pages' answers, by the
-	// marker their answers start with.
-	evals map[string]func(string, error)
+	// marker their answers start with. The closure decodes raw with
+	// driver.WebEvaluateAnswer when err is nil, so encoding/json links
+	// only into apps that call Ref.Evaluate.
+	evals map[string]func(raw string, err error)
 }
 
 func cloneWebHeaders(headers map[string]string) map[string]string {
@@ -153,14 +155,17 @@ func cloneWebHeaders(headers map[string]string) map[string]string {
 
 func (t *Tree) mountWebView(cx *Scope, parent *node, w WebView) {
 	t.enableWebView()
+	t.webDispatch = (*Tree).dispatchWeb
 	n := t.newNode(driver.KindWeb, parent, cx)
 	t.setClasses(n, w.Class)
 	t.bindStyle(cx, n, w.Style, w.StyleFunc)
 	t.setRef(n, w.Ref)
-	n.h = handlers{layout: w.OnLayout}
-	n.props = driver.ViewProps{Label: w.Label, TestID: w.TestID}
-	t.bindAccessibilityText(cx, n, &n.props.Label, w.LabelFunc)
-	n.web = &webNode{
+	n.setHandlers(handlers{layout: w.OnLayout})
+	n.setProps(driver.ViewProps{Label: w.Label, TestID: w.TestID})
+	if w.LabelFunc != nil {
+		t.bindAccessibilityText(cx, n, &n.ownProps().Label, w.LabelFunc)
+	}
+	n.ownExtra().web = &webNode{
 		config: driver.WebConfig{Source: w.Source, InjectedJavaScript: w.InjectedJavaScript,
 			InjectedJavaScriptBeforeContent: w.InjectedJavaScriptBeforeContent, UserAgent: w.UserAgent, UserAgentSuffix: w.UserAgentSuffix,
 			Headers: cloneWebHeaders(w.Headers), Incognito: w.Incognito,
@@ -250,8 +255,12 @@ func (t *Tree) restrictWeb(n *node, c *driver.WebConfig) {
 		}
 	}
 	t.refuseSource(n, AccessWebView, &c.Source.Src, &wn.refused, report)
-	if c.Source.BaseURL != "" && sourceRefusal(n.owner, AccessWebView, c.Source.BaseURL) != nil {
-		c.Source.BaseURL = ""
+	if c.Source.BaseURL != "" {
+		if canon, err := resolveSource(n.owner, AccessWebView, c.Source.BaseURL); err != nil {
+			c.Source.BaseURL = ""
+		} else {
+			c.Source.BaseURL = canon
+		}
 	}
 	c.Restricted, c.Hosts, c.Schemes, c.DownloadDir = true, strings.Join(a.WebHosts(), " "), strings.Join(webSchemes(a), " "), ""
 	for _, m := range webMediaNames {
@@ -408,8 +417,12 @@ func (r *Ref) Load(src WebSource) {
 		if refused != "" {
 			return
 		}
-		if src.BaseURL != "" && sourceRefusal(r.n.owner, AccessWebView, src.BaseURL) != nil {
-			src.BaseURL = ""
+		if src.BaseURL != "" {
+			if canon, err := resolveSource(r.n.owner, AccessWebView, src.BaseURL); err != nil {
+				src.BaseURL = ""
+			} else {
+				src.BaseURL = canon
+			}
 		}
 	}
 	src = driver.ResolveWebSource(src)
@@ -495,17 +508,18 @@ func (r *Ref) Evaluate(script string, done func(json string, err error)) {
 		done("", errors.New("nsgo: the web view runs no JavaScript"))
 		return
 	}
-	var key [8]byte
-	_, _ = rand.Read(key[:])
-	marker := evalMarker + hex.EncodeToString(key[:]) + ":"
+	marker := fmt.Sprintf("%s%016x%016x:", evalMarker, rand.Uint64(), rand.Uint64())
 	if wn.evals == nil {
 		wn.evals = map[string]func(string, error){}
 		r.t.touch(n)
 	}
 	t := r.t
-	wn.evals[marker] = func(json string, err error) {
+	wn.evals[marker] = func(raw string, err error) {
+		if err == nil {
+			raw, err = driver.WebEvaluateAnswer(raw)
+		}
 		if !n.owner.disposed {
-			t.within(n.owner, func() { done(json, err) })
+			t.within(n.owner, func() { done(raw, err) })
 		}
 	}
 	r.webCommand(driver.WebInjectJavaScript, driver.WebEvaluateScript(script, marker))
@@ -532,7 +546,7 @@ func (t *Tree) answerEval(n *node, text string) bool {
 		wn.evals = nil
 		t.touch(n)
 	}
-	done(driver.WebEvaluateAnswer(text[len(marker):]))
+	done(text[len(marker):], nil)
 	return true
 }
 

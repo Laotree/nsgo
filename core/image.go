@@ -51,11 +51,13 @@ func (t *Tree) mountImage(cx *Scope, parent *node, v Image) {
 	t.setClasses(n, v.Class)
 	t.bindStyle(cx, n, v.Style, v.StyleFunc)
 	t.setRef(n, v.Ref)
-	n.h = handlers{press: v.OnPress, layout: v.OnLayout, loadStart: v.OnLoadStart, loadEnd: v.OnLoadEnd,
-		progress: v.OnProgress, load: v.OnLoad, loadError: v.OnError}
-	n.props = driver.ViewProps{Role: RoleImage, Label: v.Label, TestID: v.TestID, ElementsHidden: v.ElementsHidden}
-	t.bindAccessibilityText(cx, n, &n.props.Label, v.LabelFunc)
-	n.image = &imageNode{config: driver.ImageConfig{Source: v.Source, Placeholder: v.Placeholder,
+	n.setHandlers(handlers{press: v.OnPress, layout: v.OnLayout, loadStart: v.OnLoadStart, loadEnd: v.OnLoadEnd,
+		progress: v.OnProgress, load: v.OnLoad, loadError: v.OnError})
+	n.setProps(driver.ViewProps{Role: RoleImage, Label: v.Label, TestID: v.TestID, ElementsHidden: v.ElementsHidden})
+	if v.LabelFunc != nil {
+		t.bindAccessibilityText(cx, n, &n.ownProps().Label, v.LabelFunc)
+	}
+	n.ownExtra().image = &imageNode{config: driver.ImageConfig{Source: v.Source, Placeholder: v.Placeholder,
 		ResizeMode: v.ResizeMode, Sampling: v.Sampling, BlurRadius: v.BlurRadius, FadeDuration: v.FadeDuration, HitTestAlpha: alphaThreshold(v.HitTestAlpha)}}
 	if v.SourceFunc != nil {
 		cx.renderEffect(func() {
@@ -119,10 +121,20 @@ func (cx *Scope) ImageSize(src ImageSource, done func(pixels Size, err error)) {
 		done(Size{Width: Points(p.Rect.Dx()), Height: Points(p.Rect.Dy())}, nil)
 		return
 	}
+	src = t.pickScale(src)
 	if len(src.Data) == 0 {
 		if err := cx.gate(serviceImage, src.URI); err != nil {
 			done(Size{}, err)
 			return
+		}
+		if a := combinedAccess(cx); a != nil {
+			resolved, err := resolveSourceWithAccess(a, cx.current(), AccessNetwork, src.URI)
+			if err != nil {
+				done(Size{}, err)
+				return
+			}
+			src.URI = resolved
+			driver.SetImageSourceCheck(&src, imageSourceCheck(a))
 		}
 	}
 	t.alertID++
@@ -131,7 +143,7 @@ func (cx *Scope) ImageSize(src ImageSource, done func(pixels Size, err error)) {
 	}
 	t.imageInfos[t.alertID] = imageInfoWait{cx.current(), done}
 	t.commands = append(t.commands, driver.MountItem{Kind: driver.ItemImageInfo, Count: t.alertID,
-		Image: &driver.ImageConfig{Source: t.pickScale(src)}})
+		Image: &driver.ImageConfig{Source: src}})
 	t.changed = true
 }
 
@@ -177,12 +189,20 @@ func (cx *Scope) KeepImage(src ImageSource) (release func()) {
 	if t == nil || owner.disposed || src.Pixels != nil || src.Empty() {
 		return func() {}
 	}
+	src = t.pickScale(src)
 	if len(src.Data) == 0 {
 		if err := cx.gate(serviceImage, src.URI); err != nil {
 			return func() {}
 		}
+		if a := combinedAccess(cx); a != nil {
+			resolved, err := resolveSourceWithAccess(a, cx.current(), AccessNetwork, src.URI)
+			if err != nil {
+				return func() {}
+			}
+			src.URI = resolved
+		}
 	}
-	key := t.pickScale(src).Key()
+	key := src.Key()
 	if key == "" {
 		return func() {}
 	}

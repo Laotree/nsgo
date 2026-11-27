@@ -41,7 +41,7 @@ build:
 # steam: { app_id: 480 }      # use your Steamworks App ID for native dev
 ```
 
-A flag replaces the value it names (`-target`, `-version`, `-output`, or the signing profiles `-profile`, `-widgets-profile`, `-share-profile` and `-clip-profile`); `nsgo build -h` lists them. Read the version-matched [Building and shipping](https://nsgo.dev/docs/building.md) page for the rest: installers, store packages, signing, notarizing, GitHub releases, updates, file types, App Clips, widgets and mini programs.
+A flag replaces the value it names (`-target`, `-version`, `-output`, or the signing profiles `-profile`, `-widgets-profile`, `-share-profile` and `-clip-profile`); `nsgo build -h` lists them. Go tools that read `nsgo.yaml` share the tool's schema, defaults and validation through `github.com/nsgo-dev/nsgo/project` (`project.Load`, `project.Config.Channel`). Read the version-matched [Building and shipping](https://nsgo.dev/docs/building.md) page for the rest: installers, store packages, signing, notarizing, GitHub releases, updates, file types, App Clips, widgets and mini programs.
 
 Set `game: true` for game classification and Game Mode metadata, and `gamepad: true` when the app supports a hardware gamepad. See [Games](https://nsgo.dev/docs/building.md#games).
 
@@ -128,6 +128,8 @@ For an adaptive Android launcher icon, set `icon.android.foreground` and `backgr
 ## Permissions and platform entries
 
 Use `cx.Download` in standalone iOS and macOS apps, and on Android, enabling `android.background_downloads: true` on Android. Embedded Apple views have no transfer host. Start transfers from visible app actions and listen with `cx.OnDownloadUpdate`. iOS uses a background URLSession. Re-register the listener at launch to receive saved results. For a self-signed public hostname on Apple, configure its per-domain ATS exception in `apple.info` and supply the exact `CertificatePEM` pin. [Services](https://nsgo.dev/docs/services.md#background-downloads)
+
+For Go-managed downloads, uploads, or sync engines on Android, enable `android.data_sync: true` and use `mobile.StartDataSync` (`mobile.DataSyncOptions`, `mobile.DataSyncNotification`, `mobile.DataSyncSupported`). Sessions are reference-counted across concurrent transfers, keep the Go engine alive across Activity destruction, report `mobile.ErrDataSyncNotAllowed` / `mobile.ErrDataSyncUnavailable` / `mobile.ErrDataSyncTimedOut`, and invoke `OnTimeout` on Android 15+ quota expiry; add `WAKE_LOCK` to `android.permissions` when requesting `WakeLock: true`. On non-Android platforms `mobile.StartDataSync` is a safe no-op. [Services](https://nsgo.dev/docs/services.md#android-datasync-keep-alive)
 
 Set `android.uses_cleartext_traffic: true` for plain HTTP to any host in an APK or App Bundle; it overrides loopback-only mode. Set `android.loopback_cleartext: true` to allow HTTP only from `localhost`, `127.0.0.1` or `::1` in a standalone APK or App Bundle. Set the host app’s network security policy for an embedded AAR.
 

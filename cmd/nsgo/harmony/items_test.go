@@ -30,7 +30,7 @@ var unsupportedItems = map[string]string{
 	"overlays and navigation": `ItemBackPreview ItemHistory`,
 	"platform limits": `ItemPickScreenColor
 		ItemSpeech ItemCanInstallPackages ItemInstallSettings
-		ItemInputSource ItemNative
+		ItemInputSource
 		ItemNativeCommand ItemBlockNative ItemShader ItemShaderInput
 		ItemShaderTransition ItemGPU`,
 	"accessibility":            `ItemAccessibilityFocus`,
@@ -65,11 +65,11 @@ var unsupportedEvents = map[string]string{
 		EventPointerDelta EventPointerUnlocked`,
 	"keyboard, text and selection": `EventKeyPress EventCompositionChange
 		EventCaretMove EventAccessibilityAction`,
-	"loading, media and animation": `EventLoadEnd EventDownload EventNative
-		EventNativeSize EventAnimation EventBuffer`,
+	"loading, media and animation": `EventLoadEnd
+		EventAnimation EventBuffer`,
 	"overlays, navigation and windows": `EventRequestClose EventModalSize
 		EventScreenHeader
-		EventNavigationStateChange EventMenu EventMenuClosed EventMessage
+		EventMenu EventMenuClosed
 		EventBackStarted EventBackCancelled EventWindowClose
 		EventWindowHidden EventReopen EventOpenFiles`,
 	"notifications and input modality": `EventNotificationPress EventInputModality
@@ -93,7 +93,7 @@ var unsupportedEvents = map[string]string{
 // KindView is the default branch of NodeView, so it needs no constant of
 // its own but still has no dedicated renderer.
 var unsupportedKinds = map[string]string{
-	"no view drawn yet": `KindNative KindShader KindGPU`,
+	"no view drawn yet": `KindShader KindGPU`,
 	"default branch":    `KindView`,
 }
 

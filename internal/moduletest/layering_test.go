@@ -100,6 +100,10 @@ var layers = []struct {
 	{"internal/moduletest", nil},
 	// The code nsgo writes from catalogs runs on i18n.
 	{"i18n", []string{"core", "internal/cldr"}},
+	// NSGo's Android arm64 cgo-free purego subset imports only its own internal packages.
+	{"internal/purego/", []string{"internal/purego/"}},
+	// Android arm64's terminal binding reaches bionic through internal/purego until upstream purego ships cgo-free Android support.
+	{"base/terminal/internal/vt", []string{"base/", "internal/purego"}},
 	{"base/", []string{"core", "base/", "i18n"}},
 	{"mobile/locales", []string{"core", "i18n"}},
 	{"mobile", []string{"core"}},
@@ -134,10 +138,12 @@ var layers = []struct {
 	// Apps use the public packages only, and the hosts that embed an
 	// example app its package.
 	{"examples/", []string{"", "audio", "cloud", "automation", "core", "base/", "ui/", "gpu", "mobile", "desktop", "desktop/locales", "web", "gamepad", "gameservices", "i18n", "icons/", "nsgotest", "tsx/", "updater", "widget", "examples/"}},
+	{"project", []string{"targets", "tsx/pkg"}},
+	{"targets", nil},
 	// The nsgo tool links no component or runtime, so changing them does
 	// not build it again; it writes TSX declarations by running the app.
 	{"cmd/nsgo/shareextension", []string{"internal/platform/objcblock", "internal/platform/shareinbox"}},
-	{"cmd/", []string{"core", "cmd/", "i18n", "targets", "internal/automation", "internal/appstartup", "internal/mimeinfo", "internal/platform/android/runtime", "tsx/bundler", "tsx/pkg", "tsx/websrc"}},
+	{"cmd/", []string{"core", "cmd/", "i18n", "project", "targets", "internal/automation", "internal/appstartup", "internal/mimeinfo", "internal/platform/android/runtime", "tsx/bundler", "tsx/pkg", "tsx/websrc"}},
 	{"tools/", []string{"core"}},
 }
 
@@ -163,12 +169,14 @@ var owned = map[string][]string{
 // portable lists the packages that build unchanged for every target: no
 // purego, syscall or unsafe.
 var portable = []string{"core", "internal/automation", "internal/appstartup", "internal/dev/locales", "internal/driver", "internal/mimeinfo", "internal/layout", "internal/shader", "internal/shader/wgsl", "internal/shaderir/", "internal/engine",
-	"internal/testhost", "internal/cldr", "targets", "base/", "ui/", "i18n", "mobile", "web", "audio", "gpu", "desktop", "desktop/locales", "icons/", "nsgotest", "tsx", "tsx/websrc", "updater", "updater/locales"}
+	"internal/testhost", "internal/cldr", "project", "targets", "base/", "ui/", "i18n", "mobile", "web", "audio", "gpu", "desktop", "desktop/locales", "icons/", "nsgotest", "tsx", "tsx/websrc", "updater", "updater/locales"}
 
 // unportable are the packages among portable's that reach the system: the
 // terminal loads libghostty-vt and runs programs, on macOS, Linux and
-// Windows, and builds elsewhere to report that it cannot.
-var unportable = []string{"base/terminal/"}
+// Windows, and builds elsewhere to report that it cannot; formula reaches
+// browser Web Workers on the web so parsing its math font stays off the page's
+// main thread.
+var unportable = []string{"base/terminal/", "base/formula/"}
 
 // layerTargets are the GOOS/GOARCH pairs the nsgo tool builds for.
 var layerTargets = [][2]string{
@@ -294,10 +302,6 @@ func checkLayer(t *testing.T, p listedPackage, tags string) {
 	}
 	isPortable := matchesAny(pkg, portable) && !matchesAny(pkg, unportable)
 	for _, imp := range p.Imports {
-		// Android arm64 terminal binding uses NSGo’s cgo-free purego subset.
-		if pkg == "base/terminal/internal/vt" && imp == modulePath+"/internal/purego" {
-			continue
-		}
 		if dep, ok := inModule(imp); ok {
 			if ruled && !matchesAny(dep, allowed) {
 				t.Errorf("%s imports %s across layers", p.ImportPath, imp)

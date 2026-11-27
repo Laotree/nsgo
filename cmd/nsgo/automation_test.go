@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/nsgo-dev/nsgo/internal/automation"
+	projectcfg "github.com/nsgo-dev/nsgo/project"
 )
 
 // startHub starts a dev server on any port with an automation hub.
@@ -456,7 +457,7 @@ launch)
 esac
 `)
 			stubOpen(t, `exit 0`)
-			p := &project{Dir: t.TempDir(), Name: "Sample", ID: "dev.example.sample"}
+			p := &project{Config: projectcfg.Config{Dir: t.TempDir(), Name: "Sample", ID: "dev.example.sample"}}
 			p.prepareDev(opts)
 			app, err := iosSession(tc.sys, opts).start(t.Context(), p)
 			if err != nil {
@@ -503,7 +504,7 @@ func TestSimulatorAutomationBuildTags(t *testing.T) {
 		{"watchos_automation", true, []string{"nsgowatch"}, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &project{Dir: dir, Name: "Sample", ID: "dev.example.sample"}
+			p := &project{Config: projectcfg.Config{Dir: dir, Name: "Sample", ID: "dev.example.sample"}}
 			p.prepareDev(devOptions{automation: tc.automation})
 			cmd, done, err := goBuildCommand(t.Context(), p, filepath.Join(t.TempDir(), "out"), nil, buildExtra{tags: tc.extra})
 			if err != nil {
@@ -550,7 +551,7 @@ func TestAppleDeviceAutomationBuildAndLaunch(t *testing.T) {
 		{watchOS, []string{"nsgowatch"}, true},
 	} {
 		t.Run(tc.sys.target+"_build", func(t *testing.T) {
-			p := &project{Dir: dir, Name: "Sample", ID: "dev.example.sample", Version: "1.0.0"}
+			p := &project{Config: projectcfg.Config{Dir: dir, Name: "Sample", ID: "dev.example.sample", Version: "1.0.0"}}
 			opts := devOptions{server: h.srv, automation: true, team: "TEAM123"}
 			p.prepareDev(opts)
 			// Use a synthetic LAN URL so the build assertion is independent of host network interfaces.
@@ -668,7 +669,7 @@ exit 0
 			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 			opts := devOptions{server: h.srv, automation: true, team: "TEAM123", fps: true}
-			p := &project{Dir: projDir, Name: "Sample", ID: "dev.example.sample"}
+			p := &project{Config: projectcfg.Config{Dir: projDir, Name: "Sample", ID: "dev.example.sample"}}
 			p.prepareDev(opts)
 			running, err := iosDeviceSession(tc.sys, opts).start(t.Context(), p)
 			if err != nil {
@@ -717,6 +718,39 @@ func TestAutomationSupportedTargets(t *testing.T) {
 	for _, tc := range cases {
 		if got := automationSupported(tc.target, tc.hostOS); got != tc.want {
 			t.Errorf("automationSupported(%q, %q) = %v, want %v", tc.target, tc.hostOS, got, tc.want)
+		}
+	}
+}
+
+func TestCheckTargetSupportsAutomation(t *testing.T) {
+	cases := []struct {
+		target string
+		want   bool
+	}{
+		{"macos_arm64", true},
+		{"macos_x64", true},
+		{"macos_universal", true},
+		{"windows_arm64", true},
+		{"windows_x64", true},
+		{"linux_arm64", true},
+		{"linux_x64", true},
+		{"web", true},
+		{"android_arm64", true},
+		{"android_x64", true},
+		{"ios", true},
+		{"tvos", true},
+		{"watchos", true},
+		{"ios_simulator", true},
+		{"tvos_simulator", true},
+		{"watchos_simulator", true},
+		{"miniprogram_wechat", true},
+		{"miniprogram_alipay", true},
+		{"tui", false},
+		{"harmonyos", false},
+	}
+	for _, tc := range cases {
+		if got := targetSupportsAutomation(tc.target); got != tc.want {
+			t.Errorf("targetSupportsAutomation(%q) = %v, want %v", tc.target, got, tc.want)
 		}
 	}
 }

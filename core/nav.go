@@ -13,8 +13,11 @@ import (
 //
 // Where the platform reports header heights (iOS, Android), a screen has the system header, as NSH's do: the platform draws it over the top of the screen's view from ItemScreen, the core pads the content below it, and the header views are layout roots of their own that the platform puts in the bar. HeaderLeft and HeaderRight take their content's size; HeaderTitle fills the room between the bar's ends when its views grow or ask for a share of the width, and otherwise takes its content's size bounded by that room. Elsewhere the screen's Header is its first child.
 
+// screenSpec holds Screen's fields without its Node methods so screenNode does not keep Screen.mountIn live when an app never uses Screen.
+type screenSpec Screen
+
 type screenNode struct {
-	screen *Screen
+	screen *screenSpec
 	stack  *node // the stack it is in, if any
 	popped bool
 	hidden bool
@@ -53,7 +56,7 @@ type screenNode struct {
 func (t *Tree) mountStack(cx *Scope, parent *node, s Stack) {
 	n := t.newNode(driver.KindView, parent, cx)
 	t.bindStyle(cx, n, Style{Overflow: Hidden}.Merge(s.Style), nil)
-	n.props = driver.ViewProps{TestID: s.TestID}
+	n.setProps(driver.ViewProps{TestID: s.TestID})
 	n.isStack = true
 	t.stacks = append(t.stacks, n)
 	for _, c := range s.Children {
@@ -64,10 +67,13 @@ func (t *Tree) mountStack(cx *Scope, parent *node, s Stack) {
 var fill = Style{Position: Absolute, Top: Pt(0), Right: Pt(0), Bottom: Pt(0), Left: Pt(0)}
 
 func (t *Tree) mountScreen(cx *Scope, parent *node, s Screen) {
+	t.sizeHeadersFn = t.sizeHeaders
+	t.emitHeaderViewsFn = t.emitHeaderViews
 	n := t.newNode(driver.KindView, parent, cx)
 	// iOS and Android draw the header, not a watch or a web build that runs as them; elsewhere a platform does where it reports a header's height.
 	env := t.root.Env()
-	sn := &screenNode{screen: &s, title: s.Title, headerStyle: s.HeaderStyle,
+	spec := screenSpec(s)
+	sn := &screenNode{screen: &spec, title: s.Title, headerStyle: s.HeaderStyle,
 		titleStyle: s.HeaderTitleStyle, largeTitleStyle: s.HeaderLargeTitleStyle,
 		native: env.headers[0] > 0 || Untracked(cx, env.mobileBars), top: NewSignal(cx, Points(0)),
 		reported: NewSignal[*Edges](cx, nil)}
@@ -77,14 +83,14 @@ func (t *Tree) mountScreen(cx *Scope, parent *node, s Screen) {
 			break
 		}
 	}
-	n.screen = sn
+	n.ownExtra().screen = sn
 	t.setClasses(n, s.Class)
 	t.bindStyle(cx, n, fill.Merge(s.Style), s.StyleFunc)
-	n.props = driver.ViewProps{Label: s.Title, TestID: s.TestID}
+	n.setProps(driver.ViewProps{Label: s.Title, TestID: s.TestID})
 	if s.TitleFunc != nil {
 		cx.renderEffect(func() {
 			sn.title = s.TitleFunc()
-			n.props.Label = sn.title
+			n.ownProps().Label = sn.title
 			t.touch(n)
 		})
 	}
@@ -206,13 +212,13 @@ func (t *Tree) layoutHeaderViews() {
 			room := t.titleRoom(n.parent, fills)
 			if fills != sn.titleFills {
 				sn.titleFills = fills
-				n.lstyleOK = false
+				n.lstyle = nil
 				t.markLayout(n)
 				t.mark(n.parent)
 			}
 			if room != sn.titleLaidWidth {
 				sn.titleLaidWidth = room
-				n.lstyleOK = false
+				n.lstyle = nil
 				t.markLayout(n)
 			}
 			if room > 0 {
@@ -270,7 +276,7 @@ func headerTitleFills(root *node) bool {
 }
 
 func nodeFillsWidth(n *node) bool {
-	s := &n.style
+	s := n.style
 	if s.Display == DisplayNone || s.Position == Absolute || s.Position == Fixed {
 		return false
 	}
@@ -383,7 +389,7 @@ func (t *Tree) sizeHeaders() bool {
 			sn.header = header
 			if pad != sn.pad {
 				sn.pad = pad
-				n.lstyleOK = false
+				n.lstyle = nil
 				t.markLayout(n)
 				changed = true
 			}

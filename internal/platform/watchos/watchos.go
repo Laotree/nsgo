@@ -158,6 +158,7 @@ type surface struct {
 	touch   touchState
 	fingers responderTouches
 	blocked []*view // the scroll views a touch responder locked (ItemBlockNative)
+	sticky  stickyTracker
 }
 
 func init() {
@@ -308,6 +309,7 @@ func (s *surface) environment(scale float64, safe driver.Edges, flags uint32) dr
 	env.LowPowerMode = lowPower
 	// watchOS's notification center schedules once, daily and weekly notifications natively.
 	env.ScheduledNotifications = apple.NotificationsAvailable()
+	env.Speak = apple.SpeakAvailable()
 	return env
 }
 
@@ -363,6 +365,7 @@ func (s *surface) EnableCanvas() { apple.EnableCanvas() }
 
 // Mount implements engine.Platform.
 func (s *surface) Mount(b *driver.MountBatch) {
+	driver.RetainBatchDrawings(b)
 	if s.batches.Push(b) {
 		apple.OnMain(func() {
 			for _, b := range s.batches.Drain() {
@@ -438,6 +441,14 @@ func (s *surface) applyAnimated() {
 			s.redraw[vw] = true
 		}
 	})
+	if s.sticky.repinBound(func(id driver.NodeID) (driver.Point, bool, bool) {
+		if vw := s.view(id); vw != nil && !vw.deleted {
+			return vw.offset, vw.scroll.Horizontal, true
+		}
+		return driver.Point{}, false, false
+	}, s.animator, &s.w) {
+		s.recull = true
+	}
 }
 
 func (s *surface) view(id driver.NodeID) *view {
@@ -515,6 +526,9 @@ func (s *surface) apply(b *driver.MountBatch) {
 			// unavailable.
 			apple.HandleSpeech(it.Count, *it.Speech, s.engine.Dispatch)
 			continue
+		case driver.ItemSpeak:
+			dispatchWatchSpeak(it, apple.HandleSpeak, s.engine.Dispatch)
+			continue
 		case driver.ItemBiometricAvailability, driver.ItemBiometricAuthenticate:
 			// LocalAuthentication's biometric policy is not on watchOS.
 			s.engine.Dispatch(driver.NoBiometric(it))
@@ -558,6 +572,9 @@ func (s *surface) apply(b *driver.MountBatch) {
 		}
 		v := s.view(it.ID)
 		if v == nil {
+			if it.Kind == driver.ItemCanvas {
+				it.Drawing.Release()
+			}
 			continue
 		}
 		switch it.Kind {
@@ -628,7 +645,9 @@ func (s *surface) apply(b *driver.MountBatch) {
 			s.touched(v)
 			s.redraw[v] = true
 		case driver.ItemCanvas:
+			was := v.drawing
 			v.drawing = it.Drawing
+			was.Release()
 			s.animator.BindCanvas(v.id, it.Drawing.Slots)
 			s.touched(v)
 			s.redraw[v] = true
@@ -652,8 +671,12 @@ func (s *surface) apply(b *driver.MountBatch) {
 				s.w.op(opBlur, v.id)
 			}
 		case driver.ItemScrollConfig:
+			axisChanged := v.scroll.Horizontal != it.Scroll.Horizontal
 			v.scroll = *it.Scroll
 			s.sendScroll(v)
+			if axisChanged && s.sticky.pin(v.id, v.offset, v.scroll.Horizontal, s.animator) {
+				s.recull = true
+			}
 		case driver.ItemScrollContent:
 			v.content = it.Size
 			s.sendScroll(v)
@@ -671,6 +694,10 @@ func (s *surface) apply(b *driver.MountBatch) {
 			s.w.op(opScrollTo, v.id)
 			s.w.f64(float64(to.X), float64(to.Y))
 			s.w.flag(false)
+		case driver.ItemStickyCells:
+			if s.sticky.set(v.id, it.Sticky, v.offset, v.scroll.Horizontal, s.animator, &s.w) {
+				s.recull = true
+			}
 		}
 	}
 	if b.Root != s.root {
@@ -732,6 +759,8 @@ func (s *surface) delete(v *view) {
 	v.deleted = true
 	v.layout.Release()
 	v.shown.Release()
+	v.drawing.Release()
+	v.drawing = nil
 	if v.image != nil {
 		v.image.Close()
 	}
@@ -749,6 +778,9 @@ func (s *surface) delete(v *view) {
 		s.focused = nil
 	}
 	s.inputGate.forgetScroll(uint32(v.id))
+	if s.sticky.delete(v.id) {
+		s.recull = true
+	}
 	s.w.op(opDelete, v.id)
 }
 
@@ -770,6 +802,12 @@ func (v *view) shownFrame() driver.Bounds {
 		return v.moving.move.Shown()
 	}
 	return v.frame
+}
+
+// placedFrame is v.shownFrame shifted by any sticky offset its scroll view
+// applies, where v shows and receives touches on the surface.
+func (v *view) placedFrame() driver.Bounds {
+	return placedBounds(v.shownFrame(), v.s.sticky.shift(v.id))
 }
 
 // shownStyle is the style v shows now: mid transition or its own, with
@@ -902,7 +940,7 @@ func hostDraw(id uint32, ctx uintptr, w, h float64) {
 		host := apple.CanvasHost{Ratio: float64(s.env.PixelRatio), Owner: v, BaseUp: baseUp,
 			Redraw: func() { s.redraw[v] = true; s.flushSoon() }}
 		if len(v.back) > 0 {
-			apple.Play(ctx, v.back, host)
+			apple.Play(ctx, nil, v.back, host)
 		}
 		switch {
 		case v.layout != nil:
@@ -918,7 +956,7 @@ func hostDraw(id uint32, ctx uintptr, w, h float64) {
 			s.drawField(v, ctx, baseUp)
 		}
 		if len(v.front) > 0 {
-			apple.Play(ctx, v.front, host)
+			apple.Play(ctx, nil, v.front, host)
 		}
 	})
 }
@@ -960,8 +998,10 @@ func hostScroll(id uint32, x, y float64, phase uint8) {
 	if phase == phaseOffset {
 		v.offset = driver.Point{X: driver.Points(x), Y: driver.Points(y)}
 		if s.animator.Scroll(v.id, v.offset) {
+			s.applyAnimated()
 			s.tick(true)
 		}
+		s.sticky.pin(v.id, v.offset, v.scroll.Horizontal, s.animator)
 		s.recull = true
 		v.scrollEvent(driver.EventScroll)
 		s.flush()

@@ -195,6 +195,7 @@ func (s *surface) environment() driver.Environment {
 		OSVersion:    d.Get("osVersion").String(),
 		Tablet:       d.Get("tablet").Truthy(),
 		HasCameraAPI: s.api.Get("chooseMedia").Type() == js.TypeFunction,
+		CanSpeak:     s.bridge.Get("canSpeak").Truthy(),
 		DeviceModel:  model,
 	})
 }
@@ -265,9 +266,13 @@ func (s *surface) event(args []js.Value) {
 	case "blur":
 		m.field(id, driver.EventBlur, "")
 	case "keyboard":
-		s.env.KeyboardHeight = driver.Points(arg(2).Float())
-		s.env.KeyboardDuration = time.Duration(arg(3).Float() * float64(time.Second))
-		s.engine.SetEnvironment(s.env)
+		h := driver.Points(arg(2).Float())
+		d := time.Duration(arg(3).Float() * float64(time.Second))
+		if s.env.KeyboardHeight != h || s.env.KeyboardDuration != d {
+			s.env.KeyboardHeight = h
+			s.env.KeyboardDuration = d
+			s.engine.SetEnvironment(s.env)
+		}
 	case "imgload":
 		m.imageLoaded(id, driver.Points(arg(2).Float()), driver.Points(arg(3).Float()))
 	case "imgerror":
@@ -294,7 +299,7 @@ func (s *surface) event(args []js.Value) {
 	case "vderror":
 		m.videoError(id, arg(2).String())
 	case "back":
-		s.engine.Dispatch(driver.Event{Kind: driver.EventBack})
+		m.backPressed()
 	case "frame":
 		m.tick(time.Since(s.started))
 	case "device":
@@ -324,7 +329,7 @@ func fingers(list js.Value) []finger {
 }
 
 // canvasPainter holds paintDrawing once core constructs a Canvas or Icon, so mini programs that never draw a canvas drop internal/platform/canvas2d.
-var canvasPainter atomic.Pointer[func(*surface, driver.NodeID, []driver.DrawOp, driver.Size, float64, bool) string]
+var canvasPainter atomic.Pointer[func(*surface, driver.NodeID, *driver.Drawing, []driver.DrawOp, driver.Size, float64, bool) string]
 
 func (*surface) EnableCanvas() {
 	if canvasPainter.Load() != nil {
@@ -336,9 +341,9 @@ func (*surface) EnableCanvas() {
 
 // paint draws ops on the offscreen canvas and returns the picture as a
 // data URL, "" while an image they draw loads.
-func (s *surface) paint(id driver.NodeID, ops []driver.DrawOp, size driver.Size, scale float64, smooth bool) string {
+func (s *surface) paint(id driver.NodeID, d *driver.Drawing, ops []driver.DrawOp, size driver.Size, scale float64, smooth bool) string {
 	if fn := canvasPainter.Load(); fn != nil {
-		return (*fn)(s, id, ops, size, scale, smooth)
+		return (*fn)(s, id, d, ops, size, scale, smooth)
 	}
 	return ""
 }
@@ -346,7 +351,7 @@ func (s *surface) paint(id driver.NodeID, ops []driver.DrawOp, size driver.Size,
 // paintDrawing draws ops at the pixel ratio times scale, which <image>
 // stretches to the canvas's box smoothly; drawn below the pixel ratio to
 // their nearest, they are stretched to it on a second canvas first.
-func (s *surface) paintDrawing(id driver.NodeID, ops []driver.DrawOp, size driver.Size, scale float64, smooth bool) string {
+func (s *surface) paintDrawing(id driver.NodeID, d *driver.Drawing, ops []driver.DrawOp, size driver.Size, scale float64, smooth bool) string {
 	full := float64(s.env.PixelRatio)
 	if full <= 0 {
 		full = 2
@@ -364,6 +369,7 @@ func (s *surface) paintDrawing(id driver.NodeID, ops []driver.DrawOp, size drive
 	ctx.Call("scale", ratio, ratio)
 	waiting := false
 	p := canvas2d.NewPlayer(ctx, ratio, math.Hypot(w, h))
+	p.Drawing = d
 	p.Font = canvasFont
 	p.NewCanvas = func(width, height int) js.Value {
 		return s.api.Call("createOffscreenCanvas", map[string]any{"type": "2d", "width": width, "height": height})

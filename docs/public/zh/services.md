@@ -338,6 +338,37 @@ iOS 使用系统的后台 URLSession，在应用挂起时继续传输。应用�
 
 启动应用后重新注册 `OnDownloadUpdate`，即可查看活动任务和保存的结果。处理完终态后调用 `p.Task.Forget()`。Android 停止下载服务时（例如前台传输超时），任务报告 `DownloadInterrupted`。在 Windows、Linux、tvOS、watchOS 和 Web 上，`Download` 返回 `ErrDownloadUnavailable`。
 
+## Android dataSync 保活服务
+
+自行运行 Go 传输引擎（如断点续传下载、分块上传或同步队列）的应用，可用 `mobile.StartDataSync` 在 Android 退到后台及 Activity 销毁期间保持 Go 进程存活。在 `nsgo.yaml` 中启用 `android.data_sync: true` 会声明 `DataSyncService`（`foregroundServiceType="dataSync"`）以及 `FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_DATA_SYNC` 和 `POST_NOTIFICATIONS` 权限。
+
+```go
+ds, err := mobile.StartDataSync(mobile.DataSyncOptions{
+	Notification: mobile.DataSyncNotification{
+		Title:         "正在同步文件",
+		Body:          "准备传输...",
+		Indeterminate: true,
+	},
+	OnTimeout: func() {
+		flushTransferCheckpoints()
+	},
+})
+if err != nil {
+	// 非前台状态启动时返回 mobile.ErrDataSyncNotAllowed；
+	// 未启用 android.data_sync 时返回 mobile.ErrDataSyncUnavailable。
+	return err
+}
+defer ds.Stop()
+ds.Update(mobile.DataSyncNotification{
+	Title:   "正在同步文件",
+	Body:    "archive.zip",
+	Current: sentBytes,
+	Total:   totalBytes,
+})
+```
+
+会话采用引用计数：多个并发传输各自调用 `mobile.StartDataSync`，共用同一个前台服务和进度通知，直到最后一个句柄调用 `Stop()` 才停止服务。`Total > 0` 显示确定进度，`Indeterminate: true`（或 `Total < 0`）显示不确定进度条，`Total == 0` 且 `Indeterminate: false` 仅显示文字。在 Android 15（API 35+）上，达到 `dataSync` 前台时长配额时会调用 `OnTimeout`，让应用在服务停止前刷盘保存断点。如需在息屏期间持有 `PARTIAL_WAKE_LOCK`，在 `android.permissions` 中加入 `WAKE_LOCK` 并设置 `WakeLock: true`。可用 `mobile.DataSyncSupported()` 检查是否已声明该服务；在非 Android 平台上 `mobile.StartDataSync` 返回安全的空操作句柄且错误为 `nil`。
+
 ## 语音与生命周期
 
 `cx.StartSpeech` 在 `cx.Env().CanRecognizeSpeech()` 为真时用系统识别器识别语音（支持 macOS、iOS、Android、Windows 以及提供 `SpeechRecognition` 或 `webkitSpeechRecognition` 的浏览器），并随着转写结果变化返回文本。在 Apple 平台上需在 `apple.info` 中声明 `NSMicrophoneUsageDescription` 和 `NSSpeechRecognitionUsageDescription`；在 Android 上需在 `android.permissions` 中添加 `RECORD_AUDIO`。在无头测试中，识别期间 `app.Speech` 保存一个 `nsgotest.SpeechSession`。使用 `app.HearSpeech` 和 `app.EndSpeech` 交付结果。
@@ -630,7 +661,7 @@ cx.Purchase("com.example.pro.monthly", core.PurchaseOptions{AccountToken: userUU
 
 ## 朗读文本
 
-`cx.Speak` 在 `cx.Env().CanSpeak()` 为真时用系统中某种语言的语音朗读文本：macOS、iOS、tvOS、Android、Windows、Web，以及装有 speech-dispatcher 的 Linux。同一时间只朗读一段：新的 `Speak` 会打断正在朗读的那段，`cx.StopSpeaking` 和发起朗读的作用域结束也会停止它。`done` 只会收到一次结束方式：读完、被停止，或因 `core.SpeakError` 失败，例如没有安装该语言的语音时返回 `core.SpeakLanguageUnavailable`。
+`cx.Speak` 在 `cx.Env().CanSpeak()` 为真时用系统中某种语言的语音朗读文本：macOS、iOS、tvOS、watchOS、Android、Windows、Web，以及装有 speech-dispatcher 的 Linux。同一时间只朗读一段：新的 `Speak` 会打断正在朗读的那段，`cx.StopSpeaking` 和发起朗读的作用域结束也会停止它。`done` 只会收到一次结束方式：读完、被停止，或因 `core.SpeakError` 失败，例如没有安装该语言的语音时返回 `core.SpeakLanguageUnavailable`。
 
 ```go
 cx.Speak("おはようございます", core.Voice{Lang: "ja-JP", Rate: 0.8}, func(stopped bool, err error) {
@@ -639,6 +670,8 @@ cx.Speak("おはようございます", core.Voice{Lang: "ja-JP", Rate: 0.8}, fu
 ```
 
 `Rate` 和 `Pitch` 的范围是 0.5 到 2，1 为语音本身的语速和音高。`cx.Voices("ja", ...)` 列出某种语言已安装的语音，应用可以提示用户安装缺少的语音，或让用户挑选，把选中语音的 `ID` 填进 `core.Voice`。浏览器要等用户在页面上按过某个控件后才会朗读，在此之前返回 `core.SpeakNotAllowed`。TSX 包里的 Go 组件需要 `text_to_speech` 能力才能朗读。
+
+在小程序中，微信基础库（`wx`）、QQ（`qq`）、手机端支付宝（`my`）和抖音（`tt`）均未内置客户端文本转语音接口，因此 `cx.Env().CanSpeak()` 默认返回 false。在微信上，如果在微信公众平台后台添加了官方「微信同声传译」（`WechatSI`，`wx069ba97219f66d99`）插件，并在 `nsgo.yaml` 中设置 `miniprogram.wechat_speech_plugin`（例如 `"0.3.5"`），则可通过该插件与 `InnerAudioContext` 朗读 `zh-CN` 和 `en-US` 文本（支持 0.5 至 2 倍 `Rate`，忽略 `Pitch`）；仅当运行时成功加载插件时 `CanSpeak()` 才为 true。
 
 ## 循环播放音频
 

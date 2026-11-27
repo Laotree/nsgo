@@ -30,7 +30,7 @@ import (
 // buildAll writes one directory per target: <output>/<name>-<version>-<target>.
 func buildAll(ctx context.Context, p *project) error {
 	p.Release = true
-	p.packageLicenses = !p.Build.embed
+	p.packageLicenses = !p.buildEmbed
 	if err := p.readReleaseNotes(); err != nil {
 		return err
 	}
@@ -41,7 +41,7 @@ func buildAll(ctx context.Context, p *project) error {
 	if err := p.checkSteamTargets(buildTargets); err != nil {
 		return err
 	}
-	if p.Build.embed {
+	if p.buildEmbed {
 		if buildTargets, err = embedOnly(buildTargets); err != nil {
 			return err
 		}
@@ -57,7 +57,7 @@ func buildAll(ctx context.Context, p *project) error {
 	}
 	started := time.Now()
 	header(p.Name, p.Version, strings.Join(buildTargets, ", "))
-	if p.Build.all {
+	if p.buildAll {
 		// Say what all left out that the build does not add.
 		var out []string
 		if !slices.Contains(buildTargets, "android_x64") && !slices.Contains(buildTargets, "android_universal") {
@@ -101,7 +101,7 @@ func buildAll(ctx context.Context, p *project) error {
 	if p.openOutput() {
 		openDir(p.Build.Output)
 	}
-	if p.Build.run {
+	if p.buildRun {
 		for _, target := range buildTargets {
 			if runnable(target) {
 				return runPackage(ctx, p, target, p.packageDir(target))
@@ -345,11 +345,11 @@ func universalStoreTargets(targets []string) []string {
 }
 
 func buildTarget(ctx context.Context, p *project, target, dir string) error {
-	if strings.HasPrefix(target, "tui_") && !p.Build.embed {
+	if strings.HasPrefix(target, "tui_") && !p.buildEmbed {
 		return buildTUI(ctx, p, dir, target)
 	}
 	_, arch, _ := strings.Cut(target, "_")
-	if p.Build.embed {
+	if p.buildEmbed {
 		switch target {
 		case "ios", "ios_simulator":
 			// One framework holds both.
@@ -766,9 +766,9 @@ func goBuildCommand(ctx context.Context, p *project, out string, env []string, e
 	if p.Release {
 		args = append(args, "-trimpath", "-buildvcs=false")
 	}
-	if p.Dev.Client {
+	if p.devClient {
 		tags = append(tags, "nsgodev")
-		if p.Dev.Automation {
+		if p.devAutomation {
 			tags = append(tags, "nsgoautomation")
 		}
 	}
@@ -1400,6 +1400,9 @@ func buildWeb(ctx context.Context, p *project, dir string, dev bool) error {
 	if app.Exec, err = write("wasm_exec.js", js); err != nil {
 		return err
 	}
+	if app.Worker, err = write("nsgo-worker.js", workerJS); err != nil {
+		return err
+	}
 	if p.split != nil {
 		// The realm's programs and the app's bundles are the page's files,
 		// so a Content-Security-Policy needs no 'unsafe-eval'
@@ -1539,6 +1542,7 @@ type webApp struct {
 	Wasm          string `json:"wasm"`
 	WasmSize      int64  `json:"wasmSize"`
 	Exec          string `json:"exec"`
+	Worker        string `json:"worker,omitempty"`
 	Loader        string `json:"loader"`
 	Host          string `json:"host,omitempty"`
 	// Runtime is the script that gives the page's realm the runtime's
@@ -1557,6 +1561,12 @@ type webApp struct {
 //
 //go:embed web/nsgo.js
 var loaderJS []byte
+
+// workerJS is nsgo-worker.js, which boots the compiled WebAssembly module in a
+// dedicated Web Worker for background tasks such as formula font parsing.
+//
+//go:embed web/worker.js
+var workerJS []byte
 
 // webHost reads nsgo.yaml's host module, which must be inside the app's
 // directory once symbolic links are resolved.
