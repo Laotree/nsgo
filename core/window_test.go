@@ -88,6 +88,30 @@ func (w *windows) dispatch(id uint32, ev driver.Event) {
 	w.commit()
 }
 
+// TestPlatformMainLeavesFurtherWindowsToTheApp checks that a run whose
+// platform shows the main view in a window of its own opens no main window
+// here, and that OpenWindow opens one beside it.
+func TestPlatformMainLeavesFurtherWindowsToTheApp(t *testing.T) {
+	root := testRoot(RootOptions{Post: func(func()) {}, Clock: NewManualClock(time.Unix(0, 0)),
+		Windows: &WindowOptions{Width: 400, Height: 300}, PlatformMain: true})
+	app := NewTree(root, ApproxTextEngine{})
+	var mainAfterSet, second *Window
+	app.Mount(AppRoot(func(cx *Scope) {
+		cx.SetMainView(func(*Scope) Node { return Text{Content: "main"} })
+		mainAfterSet = cx.MainWindow()
+		second = cx.OpenWindow(WindowOptions{Width: 200, Height: 100}, func(*Scope) Node { return Text{Content: "second"} })
+	}))
+	if mainAfterSet != nil {
+		t.Errorf("a platform main still opened a main window")
+	}
+	if second == nil {
+		t.Fatal("OpenWindow returned nil beside a platform main")
+	}
+	if n := len(app.Surfaces()); n != 1 {
+		t.Errorf("%d surfaces opened, want 1", n)
+	}
+}
+
 func TestWindowsShareSignals(t *testing.T) {
 	var count *Signal[int]
 	var settings *Window

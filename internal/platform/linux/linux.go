@@ -56,6 +56,9 @@ type Options struct {
 	Width, Height driver.Points
 	// Hidden keeps the backend's root window out of the screen while it hosts app-level services such as tray icons.
 	Hidden bool
+	// PlatformMain says the app's visible main window is the backend's own, so
+	// the engine opens no main window and OpenWindow opens further windows.
+	PlatformMain bool
 	// MainHidden opens the main window the app's function opens without showing it (nsgo.StartHidden).
 	MainHidden bool
 	// ID names the app's directories and storage (engine.AppDirs).
@@ -540,11 +543,12 @@ func (w *window) startEngine(app engine.App, opts Options, size driver.Size) {
 		Appearance:     opts.Appearance,
 		Host:           opts.Host,
 		// The app's own window takes its global shortcuts; a host's widget leaves them to the host.
-		HotKeys: !w.embedded,
-		Tray:    !w.embedded,
-		Secrets: secretService{},
+		HotKeys:      !w.embedded,
+		Tray:         !w.embedded,
+		Secrets:      secretService{},
+		PlatformMain: opts.PlatformMain,
 	}
-	if opts.Hidden {
+	if opts.Hidden || opts.PlatformMain {
 		eopts.Windows = &engine.WindowOptions{Title: opts.Title, Width: opts.Width, Height: opts.Height,
 			Constraints: opts.Constraints, Transparent: opts.Transparent, NoShadow: opts.NoShadow, SkipTaskbar: opts.SkipTaskbar, Hidden: opts.MainHidden}
 	}

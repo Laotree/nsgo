@@ -845,8 +845,8 @@ func newTree(root *Scope, text driver.TextEngine, id uint32) *Tree {
 	return t
 }
 
-// listed reports whether t shows a view of its own, as DevTools list surfaces: every tree except the hidden app tree of an app that opens windows.
-func (t *Tree) listed() bool { return t.rt.windows == nil || t.id != 0 }
+// listed reports whether t shows a view of its own, as DevTools list surfaces: every tree except the hidden app tree of an app that opens windows. A platform main shows the main view in its own window, so the first tree is listed too.
+func (t *Tree) listed() bool { return t.rt.windows == nil || t.rt.platformMain || t.id != 0 }
 
 // Mount builds what app returns as the root view's content.
 func (t *Tree) Mount(app func(cx *Scope) Node) {

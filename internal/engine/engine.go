@@ -220,6 +220,10 @@ type Options struct {
 	// the app's own, which shows no view, and the platform attaches each
 	// surface the app opens.
 	Windows *WindowOptions
+	// PlatformMain says the platform shows the main view in a window of its
+	// own, so core opens none and OpenWindow opens further windows beside it
+	// (core.RootOptions.PlatformMain).
+	PlatformMain bool
 	// HotKeys, set where the platform registers global shortcuts but opens no windows, has the first surface take the app's global shortcuts (core.RootOptions.HotKeys).
 	HotKeys bool
 	// Tray is set where the platform supports app-level tray icons without
@@ -563,17 +567,18 @@ func (e *Engine) run(p Platform, app App, opts Options, tokens Tokens) {
 				setPreferredFrameRate(s.p, driver.FrameRateRange(rate))
 			}
 		},
-		Storage:   opts.Storage,
-		Secrets:   opts.Secrets,
-		ReadAsset: opts.ReadAsset,
-		DataDir:   opts.DataDir,
-		CacheDir:  opts.CacheDir,
-		LogsDir:   opts.LogsDir,
-		UserDir:   opts.UserDir,
-		Host:      opts.Host.Channel,
-		Windows:   opts.Windows,
-		HotKeys:   opts.HotKeys,
-		Tray:      opts.Tray,
+		Storage:      opts.Storage,
+		Secrets:      opts.Secrets,
+		ReadAsset:    opts.ReadAsset,
+		DataDir:      opts.DataDir,
+		CacheDir:     opts.CacheDir,
+		LogsDir:      opts.LogsDir,
+		UserDir:      opts.UserDir,
+		Host:         opts.Host.Channel,
+		Windows:      opts.Windows,
+		PlatformMain: opts.PlatformMain,
+		HotKeys:      opts.HotKeys,
+		Tray:         opts.Tray,
 		Updater: core.UpdaterState{Managed: core.UpdaterManaged(opts.Updater.Managed), Store: opts.Updater.Store,
 			NativePreferences: opts.Updater.NativePreferences, AutomaticChecks: opts.Updater.AutomaticChecks,
 			AutomaticDownloads: opts.Updater.AutomaticDownloads, Available: opts.Updater.Available, Notes: opts.Updater.Notes, LastCheck: opts.Updater.LastCheck},

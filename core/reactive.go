@@ -127,6 +127,10 @@ type RootOptions struct {
 	// window's options (SetMainView): the first tree is then the app's
 	// own surface, which shows no view.
 	Windows *WindowOptions
+	// PlatformMain says the platform shows the main view in a window of its
+	// own, so core opens none: OpenWindow and OpenPanel open further
+	// windows beside it.
+	PlatformMain bool
 	// HotKeys, set where the platform registers global shortcuts but opens no windows, sends RegisterHotKey's shortcuts to the first tree, as a platform that opens windows has them sent to the app's own surface. The platform answers each with EventHotKeyState; elsewhere RegisterHotKey's handles are unsupported at once.
 	HotKeys bool
 	// Tray is set where the platform supports app-level tray icons without
@@ -141,7 +145,7 @@ func NewRoot(opts RootOptions) *Scope {
 	}
 	rt := &runtime{graphOwner: newGraphOwner(opts.CheckCommits), post: opts.Post, clock: opts.Clock, report: opts.Report, checkCommits: opts.CheckCommits,
 		store: opts.Storage, secrets: opts.Secrets, readAsset: opts.ReadAsset, gameServices: opts.GameServices, cloud: opts.Cloud, dataDir: opts.DataDir, cacheDir: opts.CacheDir, logsDir: opts.LogsDir, userDir: opts.UserDir,
-		requestFrame: opts.RequestFrame, requestSurfaceFrame: opts.RequestSurfaceFrame, setFrameRate: opts.SetFrameRate, windows: opts.Windows, takesHotKeys: opts.HotKeys, tray: opts.Tray, networkWatcher: opts.NetworkWatcher}
+		requestFrame: opts.RequestFrame, requestSurfaceFrame: opts.RequestSurfaceFrame, setFrameRate: opts.SetFrameRate, windows: opts.Windows, platformMain: opts.PlatformMain, takesHotKeys: opts.HotKeys, tray: opts.Tray, networkWatcher: opts.NetworkWatcher}
 	rt.root = &Scope{rt: rt}
 	if devtools.Enabled {
 		rt.dev = newDevState()
@@ -254,11 +258,12 @@ type runtime struct {
 	// windows are the main window's options where the platform opens
 	// windows (RootOptions.Windows); surfaces the trees of the windows,
 	// panels and tray views opened, keyed those opened with a key.
-	windows   *WindowOptions
-	tray      bool
-	surfaces  []*Tree
-	surfaceID uint32
-	keyed     map[string]*Window
+	windows      *WindowOptions
+	platformMain bool
+	tray         bool
+	surfaces     []*Tree
+	surfaceID    uint32
+	keyed        map[string]*Window
 	// globalKeys are the bindings made with KeyOptions.AllSurfaces, which every tree opened takes.
 	globalKeys []*globalKey
 	// menuBar is the tree that set the application menu last, whose menu macOS's menu bar shows (menuHasKey).

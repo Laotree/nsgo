@@ -526,7 +526,7 @@ func (cx *Scope) MainWindow() *Window {
 func (cx *Scope) SetMainView(view func(cx *Scope) Node) {
 	rt := cx.rt
 	rt.mainViewSignal().Set(view)
-	if rt.windows == nil || view == nil || rt.ownMain != nil && !rt.ownMain.closed {
+	if rt.windows == nil || rt.platformMain || view == nil || rt.ownMain != nil && !rt.ownMain.closed {
 		return
 	}
 	rt.ownMain = rt.root.openWindow(*rt.windows, rt.showMainView, true)

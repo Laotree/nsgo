@@ -63,6 +63,9 @@ type Options struct {
 	Width, Height driver.Points
 	// Hidden keeps the backend's root window off the screen as the app's own surface (nsgo.Run(App)), which opens the windows the app shows and shows only as an alert's window.
 	Hidden bool
+	// PlatformMain says the app's visible main window is the backend's own, so
+	// the engine opens no main window and OpenWindow opens further windows.
+	PlatformMain bool
 	// MainHidden opens the main window the app's function opens without showing it (nsgo.StartHidden).
 	MainHidden bool
 	// Frame is where the window opens (nsgo.WindowFrame).
@@ -999,8 +1002,9 @@ func (w *window) startEngine(app engine.App, opts Options, size driver.Size) {
 		Host:           opts.Host,
 		Tray:           !w.embedded,
 		Secrets:        credentials{},
+		PlatformMain:   opts.PlatformMain,
 	}
-	if opts.Hidden {
+	if opts.Hidden || opts.PlatformMain {
 		eopts.Windows = &engine.WindowOptions{Title: opts.Title, Width: opts.Width, Height: opts.Height,
 			Frame: opts.Frame, Material: opts.Material, Constraints: opts.Constraints, Transparent: opts.Transparent,
 			NoShadow: opts.NoShadow, SkipTaskbar: opts.SkipTaskbar, Hidden: opts.MainHidden}
