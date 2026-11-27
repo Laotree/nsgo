@@ -83,9 +83,9 @@ nsgo dev -target web -preview ./components
 
 保存文件会重新构建预览，保留已选的组件和显示设置。`nsgopreview` 标签将预览排除在普通发布构建之外。在使用同一标签的 `_test.go` 文件中用 `nsgotest.Start(t, PreviewEmpty)` 复用预览，然后用 `GOFLAGS=-tags=nsgopreview nsgo test -target macos ./components` 运行测试以生成原生截图。
 
-使用 `-target ios_simulator` 首次安装主应用后，只改 Go 代码会替换已安装的可执行文件并重新启动应用。修改 `nsgo.yaml`、打包资源或应用图标会重新安装。
+使用 `-target ios_simulator` 首次安装主应用后，只改 Go 代码会仅重新编译并签名可执行文件，直接替换已安装的模拟器应用包内的二进制并重新启动。修改 `nsgo.yaml`、打包资源、翻译目录、应用图标、启动画面或 Go 链接的原生框架会重新打包并安装。
 
-开发 Android 界面时，可以用 `nsgo dev -target android -android-host` 缩短 Go 重建流程。工具先安装原生运行时，再在开发机上运行 Go。每次 Go 重建都会通过 adb 重连到同一个 Activity。打包资源、预编译类、启动器图标或 `nsgo.yaml` 变化时，会重新安装运行时 APK。Go 进程使用开发机的构建约束、文件系统和网络。`Scope.DiskSpace` 报告开发机上 `DataDir` 所在卷的空间。验证 `_android.go` 文件或 Go 在设备上的行为时，请使用常规 Android dev 命令。
+开发 Android 界面时，可以用 `nsgo dev -target android -android-host` 缩短 Go 重建流程。工具先安装原生运行时，再在开发机上运行 Go。每次 Go 重建都会通过 adb 重连到同一个 Activity（如果 Activity 已被关闭，则直接重新启动而不重新安装）。打包资源、预编译类、启动器图标、启动画面、翻译目录或 `nsgo.yaml` 变化时，会重新安装运行时 APK。Go 进程使用开发机的构建约束、文件系统和网络。`Scope.DiskSpace` 报告开发机上 `DataDir` 所在卷的空间。验证 `_android.go` 文件或 Go 在设备上的行为时，请使用常规 Android dev 命令。
 
 ## 错误
 
@@ -121,7 +121,8 @@ nsgo dev -devtools
 
 - **Elements**：以树形展示视图。每个视图都标出构建它的组件、在编辑器中打开对应代码行的链接、测试用来查找它的选择器、它的 classes、位置和尺寸、布局后的外边距、边框和内边距，以及它设置的样式。鼠标悬停在某一行上，会像浏览器的 DevTools 一样在应用里画出它的外边距、内边距和内容；按下 **Pick** 后在任意窗口、面板、弹窗表（sheet）或嵌入式视图里点一个视图，就能在树中找到它。
 - **State**：按拥有它们的组件和计算列出代码创建的 signal 及其当前值、memo 的值，以及读取每个值的计算个数。没有计算读取的值，改动它不会改变屏幕上的任何内容。字符串、布尔值和数字可以直接修改，不用改代码就能试一种状态。NSGo 自己创建的值放在 **NSGo's own** 开关后面。
-- **Profiler**：每次提交的耗时，拆成提交前你的代码、提交本身（含布局）和在平台主线程上应用这三部分。它还列出写入导致这次提交的代码行，展开后可以看到这次提交运行的计算，耗时最长的排在前面。另一个列表按创建它们的代码行，列出过去一秒中运行最多的计算。Android 的运行时在自己的 Java 代码里应用批次，因此 Android 的提交没有平台耗时。
+- **Profiler**：每次提交的耗时，拆成提交前你的代码、提交本身（含布局）和在平台主线程上应用这三部分。它还列出写入导致这次提交的代码行，展开后可以看到这次提交运行的计算（耗时最长的排在前面）以及对应的 signal 触发因果链。另一个列表按创建它们的代码行，列出过去一秒中运行最多的计算。Android 的运行时在自己的 Java 代码里应用批次，因此 Android 的提交没有平台耗时。
+- **Causal**：提供两个实时视图用于追踪 `nsgodev` 构建中的响应式因果链。**Signal triggers** 将每次 signal 写入的序号、signal ID、代数与写入位置关联到它调度并执行的计算，并显示耗时与合并的重触发次数；**Scope disposals** 按原因（`dispose`、`rerun` 或 `cascade`）列出近期的作用域释放记录，包含所有者与根所有者 ID、释放调用点以及执行的每项清理（`window`、`panel`、`tray`、`overlay`、`audio-player`、`sound` 或 `cleanup`）。
 - **Recorder**：把你在应用里的按压、输入、清空和滚动记录成一个 `nsgotest` 测试文件，复制到 `_test.go` 文件即可使用。在 Elements 中，**Assert shown** 和 **Assert text** 会为选中的视图添加检查。文字检查记录的是应用当时显示的语言下的文字，因此录制时请使用测试运行时的语言。
 - **Highlight updates** 会像 `-highlight` 一样框出每次提交改动的视图。
 - **Layout** 在设备上显示或隐藏[布局审计](#布局)，与 `-layout` 启动时显示的相同。

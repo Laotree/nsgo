@@ -320,7 +320,13 @@ func (s *surface) pickDirectories(r driver.DirectoriesRequest, id uint32) {
 		var dirs []driver.Directory
 		if response == 1 { // NSModalResponseOK
 			apple.ForEach(panel.Send(sel("URLs")), func(u objc.ID) {
-				dirs = append(dirs, driver.Directory{Path: apple.GoString(u.Send(sel("path")))})
+				d := driver.Directory{Path: apple.GoString(u.Send(sel("path")))}
+				if r.Persist {
+					if token, ok := apple.CreateDirectoryBookmark(u, true); ok {
+						d.Token = token
+					}
+				}
+				dirs = append(dirs, d)
 			})
 		}
 		s.engine.Dispatch(driver.Event{Kind: driver.EventFiles, Count: id, Data: dirs})

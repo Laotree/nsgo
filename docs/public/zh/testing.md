@@ -80,11 +80,11 @@ func TestMain(m *testing.M) {
 
 `app.KeyCode("KeyW")` 按一次物理键位，`KeyCodeDown` 和 `KeyCodeUp` 分别按住和释放。在无界面测试中，设置 `core.Environment.KeyCodeNames`（例如 `map[string]string{"KeyW": "z"}`）可以测试其他布局；未指定的键位使用美式布局。使用 `-target` 时，平台自己的按键事件携带该键位（例如扫描码或键码），因此右侧修饰键和小键盘数字能与左侧修饰键和数字行区分开。在 macOS、Windows、Linux 和 Web 上，按键名称遵循平台当前的键盘布局，因此 AZERTY 布局下 `KeyW` 为 `z`；iOS、Android 和 HarmonyOS 报告美式布局在该位置的按键。同时被 `KeyDown` 和 `KeyCodeDown` 按住的修饰键，要等两者都释放后才会抬起。无法按物理键位的目标（例如 watchOS）会跳过测试。
 
-以 `-target` 运行时，`app.Select(selector, start, end)` 移动原生文本框的选区。偏移量以 UTF-16 单元计，超出文本的部分会截断，颠倒的端点会排序。iOS 和 Android 使用原生文本输入 API；HarmonyOS 使用文本框控制器，并等待原生选区回调。`OnSelectionChange` 正常执行；没有该回调时，测试模型也读取实际选区。macOS、Windows、Linux 和 Web 使用全选和方向键，消费这些键的绑定或应用菜单项会把它们拦下。随后输入和原生剪贴板编辑作用于该选区；HarmonyOS 的测试输入替换原生回调报告的范围，但其测试宿主还不会驱动原生剪贴板按键。
+以 `-target` 运行时，`app.Select(selector, start, end)` 移动原生文本框的选区。偏移量以 UTF-16 单元计，超出文本的部分会截断，颠倒的端点会排序。iOS 和 Android 使用原生文本输入 API；HarmonyOS 使用文本框控制器，并等待原生选区回调。`OnSelectionChange` 正常执行；没有该回调时，测试模型也读取实际选区。macOS、Windows、Linux 和 Web 使用全选和方向键，消费这些键的绑定或应用菜单项会把它们拦下。随后输入和原生剪贴板编辑作用于该选区；在 HarmonyOS 上，测试输入以及复制、剪切、粘贴、全选和退格键在按键映射之后作用于原生回调报告的范围。
 
 在 Linux 和 Android 的无头测试中，可以用 `app.Installs` 检查交给安装器的软件包路径。设置 `app.InstallPackage` 可让模拟安装器返回错误。
 
-`app.DoublePress(selector)` 在一个步骤内连续按压两次，让平台识别双击或双触。`app.Pan` 使用目标的拖动输入，每个偏移量都相对于起点。`app.Pinch` 支持无头模式，也可在 macOS、iOS 模拟器、Android 和 Web 上驱动平台的手势处理。iOS 模拟器上的每个缩放值决定两根手指的间距，UIKit 在移动超过识别阈值后才开始报告手势。Android 上的两根手指会先张开至原生识别阈值，再依次应用指定的缩放值。如果当前目标不支持捏合输入，`Pinch` 会跳过测试的剩余步骤，并报告不支持的目标。
+`app.DoublePress(selector)`（以及 `Surface.DoublePress`）在一个步骤内连续按压两次，让平台在无头和目标平台上都能识别双击或双触（`PressEvent.Clicks == 2`）。`app.Pan` 支持无头模式，并在 macOS、Windows、Linux、iOS、iOS 模拟器、Android 和 Web 上使用目标的拖动输入，每个偏移量都相对于起点。`app.Pinch` 支持无头模式，并在 macOS、Windows、Linux、iOS、iOS 模拟器、Android 和 Web 上驱动平台的手势处理。iOS 模拟器上的每个缩放值决定两根手指的间距，UIKit 在移动超过识别阈值后才开始报告手势；iOS 真机则通过原生命中测试驱动视图的捏合或滚动缩放路径。Android 上的两根手指会先张开至原生识别阈值，再依次应用指定的缩放值。如果当前目标不支持捏合输入（例如 tvOS、watchOS 或 HarmonyOS），执行到 `Pinch` 时会跳过测试的剩余步骤，并报告不支持的目标。
 
 `app.Orientation` 保存当前生效的 `Scope.RequestOrientation` 方向集合。使用应用原有的方向策略时，该值为零。
 

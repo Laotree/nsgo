@@ -34,6 +34,21 @@ type Causes struct {
 	App, Layout time.Duration
 	// Ran are the computations that ran, by kind and the line that made them, the longest first; they are named only while DevTools record sites (devtools.Enabled).
 	Ran []Ran
+	// Triggers links signal writes to the computations they ran during this commit; populated only in nsgodev builds.
+	Triggers []Trigger `json:",omitempty"`
+}
+
+// Trigger links one signal write to a computation it ran within a commit.
+type Trigger struct {
+	Seq         uint64
+	SignalID    uint64
+	Generation  uint64
+	WriteSite   string
+	Kind        string
+	Owner       uint64
+	Site        string
+	Took        time.Duration
+	Retriggered int
 }
 
 // Ran is the runs of the computations of one kind made at one line, and their time.
@@ -108,7 +123,7 @@ var itemNames = map[ItemKind]string{
 	ItemBlockNative: "block-native", ItemShader: "shader", ItemSetClipboardImage: "set-clipboard-image",
 	ItemOpenURL: "open-url", ItemPickImages: "pick-images",
 	ItemAppearance: "appearance", ItemPopupMenu: "popup-menu", ItemQuit: "quit", ItemQuitResponse: "quit-response", ItemOverlayPermission: "overlay-permission", ItemBackPreview: "back-preview", ItemHistory: "history",
-	ItemPickFiles: "pick-files", ItemSaveFile: "save-file", ItemDirection: "direction", ItemPickDirectories: "pick-directories", ItemPickScreenColor: "pick-screen-color",
+	ItemPickFiles: "pick-files", ItemSaveFile: "save-file", ItemDirection: "direction", ItemPickDirectories: "pick-directories", ItemOpenDirectory: "open-directory", ItemReleaseDirectory: "release-directory", ItemPickScreenColor: "pick-screen-color",
 	ItemOpenFile: "open-file", ItemShare: "share", ItemInstallPackage: "install-package",
 	ItemCanInstallPackages: "can-install-packages", ItemInstallSettings: "install-settings",
 	ItemOpenSurface: "open-surface", ItemTray: "tray", ItemTrayMenu: "tray-menu", ItemHotKeys: "hot-keys",

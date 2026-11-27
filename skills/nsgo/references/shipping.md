@@ -82,7 +82,7 @@ Set `web.offline: true` in `nsgo.yaml` to cache a published web build and its pa
 
 Mac App Store builds use Apple's lookup and native store page. A Google Play install's manual `updater.Check` enters Play's immediate update flow when allowed; other store installs stay managed, and no store install reads a direct appcast. Embedded Android hosts supply `com.google.android.play:app-update:2.1.0` and its [shrink rules](https://nsgo.dev/docs/embedding.md#android).
 
-Use `updater.CapabilityOf(cx)` to explain whether a copy updates itself, opens a page, is a development build, follows its channel or store, or has no updater; it makes no network request. Direct Linux copies owned by dpkg or pacman, or running from an AppImage, report `ManagedSelf`; other unpackaged copies report `ManagedPage`. Read `updater.Status(cx)` inside a binding for preferences, the available version, notes and last-check time. Persist runtime choices with `updater.SetAutomaticChecks`; `updater.SetAutomaticDownloads` and `updates.automatic_downloads` are macOS-only. See [Updates](https://nsgo.dev/docs/building.md#updates).
+Use `updater.CapabilityOf(cx)` to explain whether a copy updates itself, opens a page, is a development build, follows its channel or store, or has no updater; it makes no network request. Direct Linux copies owned by dpkg or pacman, or running from an AppImage, report `ManagedSelf`; other unpackaged copies report `ManagedPage`. Read `updater.Status(cx)` inside a binding for preferences, the available version, notes and last-check time. Persist runtime choices with `updater.SetAutomaticChecks`; `updater.SetAutomaticDownloads` and `updates.automatic_downloads` are macOS-only. TSX apps import the same API from `nsgo/updater` (`checkForUpdate`, `checkInBackground`, `checkDaily`, `capability`, `status`, `setAutomaticChecks`, `setAutomaticDownloads`), withheld from sandboxes unless listed in `Sandbox.Modules`. See [Updates](https://nsgo.dev/docs/building.md#updates).
 
 Publish each Linux `.AppImage` with its `.AppImage.zsync` sidecar. Embedded update discovery defaults to `release.github` or the GitHub remote `origin`; `linux.appimage_update` overrides it with a stable `zsync|https://…` URL or a `gh-releases-zsync` locator, and an explicit empty string disables discovery. Keep the URL stable and serve HTTP ranges. [AppImage updates](https://nsgo.dev/docs/building.md#installers)
 
@@ -139,7 +139,7 @@ For standalone Android apps that host a custom Android View with `core.Native`, 
 
 ## Embedding
 
-`nsgo build -embed -target ios|android_arm64` packages an app as an XCFramework or an AAR for a host app of your own, `nsgo.NewView` shows one in a Go desktop program, and the web build's loader puts apps in a page. `examples/embed-*` show each host ([Embedding](https://nsgo.dev/docs/embedding.md)).
+`nsgo build -embed -target ios|tvos|android_arm64` packages an app as an XCFramework or an AAR for a host app of your own, `nsgo.NewView` shows one in a Go desktop program, and the web build's loader puts apps in a page. `examples/embed-*` show each host ([Embedding](https://nsgo.dev/docs/embedding.md)).
 
 The web loader shows download progress. Style `progress.nsgo-load-progress` or replace it with `onProgress` in the mount options or the `web.host` module. A release includes smaller Brotli and gzip copies of its wasm for servers configured to negotiate precompressed files.
 

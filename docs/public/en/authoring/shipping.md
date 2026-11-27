@@ -48,9 +48,25 @@ From the library's root, `nsgo test` takes every package, and `-target macos` or
 
 ## Publishing
 
-A component library is a Go module: apps `go get` it and import its packages. Keep its unstyled and styled forms in separate packages when both exist, so an app with a look of its own imports no styles it does not use.
+A component library is a Go module: apps add it with `nsgo add <module>` (or `go get`) and import its packages. Keep its unstyled and styled forms in separate packages when both exist, so an app with a look of its own imports no styles it does not use.
 
-The site's [Components](https://nsgo.dev/components/) page lists libraries others can use; add a document and a screenshot to `docs/public/components/` to offer yours.
+Libraries listed in NSGo's built-in index ([`cmd/nsgo/registry.yaml`](https://github.com/nsgo-dev/nsgo/blob/main/cmd/nsgo/registry.yaml)) appear in `nsgo add -list` and can be added by short name (`nsgo add <name>`). To list a library, open a pull request adding an entry to `cmd/nsgo/registry.yaml` in canonical form (sorted by name, fields in schema order, two-space indent). A listed library needs:
+
+- a tagged release (never an untagged commit);
+- a module path that resolves without a redirect;
+- a resolved dependency graph that keeps apps on a released NSGo;
+- an SPDX license expression.
+
+### Registry checks
+
+NSGo's [registry workflow](https://github.com/nsgo-dev/nsgo/blob/main/.github/workflows/registry.yml) runs weekly and on pull requests that change `cmd/nsgo/registry.yaml`. For each listed item it checks that:
+
+- `@upgrade` (or the item's pinned `version`) resolves to a semantic release tag, never a pseudo-version or pre-release, and the module's `go.mod` declares the listed path;
+- the repository URL named by the module path answers without redirecting;
+- adding the item to a scratch module requiring NSGo's latest release keeps NSGo on a released version;
+- `nsgo-module.yaml` (when present) and every linked `nsgo-natives.yaml` parse cleanly;
+- for a library, `go tool nsgo check -target linux_x64` passes for a scratch package importing its declared `import` packages (compiling without running or testing third-party code);
+- for a component, the module's `nsgo-module.yaml` at `@upgrade` declares it, and (for modules other than NSGo itself, whose `check.yml` vets components in place) copying it into a scratch app requiring NSGo's latest release passes `go tool nsgo check -target linux_x64`.
 
 TSX apps reach Go components once they are registered, in an `init` function:
 

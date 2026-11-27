@@ -159,10 +159,15 @@ licenses:
 用 `nsgo add` 添加库，也就是一个 Go 模块。它是先展示计划的 `go get`：
 
 ```sh
+nsgo add -list                           # 列出 NSGo 内置索引中的库和组件
+nsgo add -list icons flags               # 不区分大小写地按词在名称、简介和标签中筛选
+nsgo add media                           # 从 NSGo 内置索引解析短名称
 nsgo add github.com/acme/chart           # 最新的正式版本，go.mod 已有它时保持不变
 nsgo add github.com/acme/chart@v1.3.0    # 这个版本，即使低于 go.mod 中的版本
 nsgo add -dry-run github.com/acme/chart  # 只打印计划，什么也不写
 ```
+
+短名称（首段不含 `.`）只从 NSGo 的内置索引（嵌入 `nsgo` 的 `cmd/nsgo/registry.yaml`，不请求网络也不缓存）解析。短名称按与模块路径相同的方式规划：条目指定了 `version` 时用该版本，否则用 `@upgrade`，并拒绝解析到未打标签提交的模块（提示改用带版本的模块路径）。未知名称会提示运行 `nsgo add -list`。`nsgo add -list [words...]` 打印每个匹配条目的名称、类型（`library` 或 `component`）、模块路径和简介，在模块内外均可运行。类型为 `component` 的条目会在列表中显示，但在组件复制支持落地前 `nsgo add` 会拒绝添加它们。
 
 ```text
 github.com/acme/chart
@@ -461,6 +466,8 @@ updates:
 
 在绑定中读取 `updater.Status(cx)`，即可跟踪 `Capability`、`AutomaticChecks`、`AutomaticDownloads`、`Available`、`Notes` 和 `LastCheck`，在 Linux 和 Android 上还能跟踪更新的 `Phase`、`Loaded` 和 `Total`（进度条可用 `Fraction()`）。`updater.SetAutomaticChecks(cx, on)` 保存用户的选择，并在运行时改变每日检查；Sparkle 和 WinSparkle 使用各自的设置，Linux、Android 和 iOS 使用私有存储分区。`updater.SetAutomaticDownloads(cx, on)` 仅支持 macOS，初始值来自 `updates.automatic_downloads`；其他平台报告 false 并忽略该设置。不支持更新或由外部分发渠道管理的版本将两个设置都报告为 false。WinSparkle 在发现更新的回调后读取 appcast，取得状态所需的版本说明，安装仍由 WinSparkle 决定。Linux 在启动时确认 Debian 或 Arch 软件包是否拥有可执行文件，以及应用是否运行于 AppImage；这些副本报告 `ManagedSelf`，其他未受支持的软件包或解压副本在首次检查之前就会报告 `ManagedPage`。
 
+TSX 应用从 `nsgo/updater` 导入对应接口：`checkForUpdate`、`checkInBackground`、`checkDaily`、`capability`、响应式的 `status`、`setAutomaticChecks` 与 `setAutomaticDownloads`，在相同的平台更新器上运行。沙箱中的插件默认不可导入 `nsgo/updater`，除非宿主在 `Sandbox.Modules` 中明确授予。
+
 ## 登录时启动
 
 `desktop.SetLaunchAtLogin(cx, on)` 通过平台的登录机制登记应用，`desktop.LaunchAtLogin(cx, done)` 读取状态。当前工具构建的 MSIX 会自动声明一个默认禁用的启动任务；启用时遵循用户在“启动应用”中的开关和管理员策略。普通 Windows 和 Linux 安装仍使用 Run 注册表项和 XDG 自启动文件，macOS 使用应用包的原生登录服务。
@@ -579,7 +586,7 @@ nsgo dev -target miniprogram_alipay
 
 `miniprogram.appid` 按平台（`wechat`、`qq`、`alipay`、`douyin`）设置小程序的 AppID；没有时微信开发者工具以测试号预览，其他工具会要求填写。微信的 `-run` 和 `dev` 每次重新构建都会通过 CLI 关闭并自动打开项目，因此开发者工具会编译最新文件。此流程已用 2.01.2510290 版开发者工具检查。平台的导航栏显示应用的标题；开启 `custom_navigation` 后应用占满页面，安全区让它避开右上角的胶囊按钮。应用读到的是手机的操作系统，`Env.Simulated` 为 true，与网页的 `--nsgo-os` 相同：导航栈的页面显示自己的 `Header`，没有系统标题栏代替它。QQ、支付宝和抖音尚未在各自的工具中试过；支付宝暂不支持由应用处理返回、关键帧动画和键盘高度。
 
-小程序为试验性支持。小程序只运行 Go 应用，不运行 TSX，且各平台把应用压缩后的模块限制在 2 MB 以内：基于 `base` 的几个页面的应用放得下，`examples/gallery-miniprogram` 就是一例，用 `ui` 控件的应用暂时放不下，放不下时 `build` 会说明。着色器在小程序中不绘制，网页视图、视频、原生组件和应用自带的字体文件暂不显示。
+小程序为试验性支持。小程序只运行 Go 应用，不运行 TSX，且各平台把应用压缩后的模块限制在 2 MB 以内：基于 `base` 的几个页面的应用放得下，`examples/gallery-miniprogram` 就是一例，用 `ui` 控件的应用暂时放不下，放不下时 `build` 会说明。着色器在小程序中不绘制，网页视图和原生组件暂不显示；应用自带字体文件（`loadFontFace`）、`TintColor` 着色图片、偏离基线的行内视图、文本选区与 `<video>` 视频播放已接入四个平台的模板，但尚未在各平台开发者工具中实测。
 
 ## 鸿蒙
 

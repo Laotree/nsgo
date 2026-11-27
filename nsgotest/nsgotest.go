@@ -272,9 +272,10 @@ type App struct {
 	ClipboardItems       []core.ClipboardItem
 	ClipboardChangeCount int64
 	Announced            []string
-	// selectedArea and selectedText remember the active selection area and its plain text set by SelectText or SelectTextRange, for mod+c, mod+a and Escape in headless tests.
+	// selectedArea, selectedText and selectedItem remember the active selection area and its copy payload set by SelectText or SelectTextRange, for mod+c, mod+a and Escape in headless tests.
 	selectedArea driver.NodeID
 	selectedText string
+	selectedItem *driver.ClipboardItem
 	// InputSource is the keyboard input source the app selected, as a
 	// test sees it; inputSourceWas the one that selection replaced.
 	InputSource    string
@@ -335,9 +336,17 @@ type App struct {
 	// picks; with none the user cancels.
 	DirectoryPicks  []DirectoryPick
 	PickDirectories func(r DirectoryPick) []core.Directory
+	// PersistedDirectories holds persisted folders keyed by Directory.Token.
+	// PickDirectories with Persist stores returned directories that have a
+	// Token (or Path, using Path as Token), OpenDirectory looks them up when
+	// the OpenDirectory hook is nil, and ReleaseDirectory deletes them and
+	// records their tokens in ReleasedDirectories.
+	PersistedDirectories map[string]core.Directory
+	OpenDirectory        func(token string) (core.Directory, error)
+	ReleaseDirectory     func(token string) error
+	ReleasedDirectories  []string
 	// Saves are the saves the app asked for, oldest first. SaveFile
 	// answers each with the path the user saves to, where the file is
-
 	// written after any preflight check. An absent answer or "" cancels.
 	Saves            []FileSave
 	SaveFile         func(r FileSave) string
@@ -362,6 +371,10 @@ type App struct {
 	// Shares are the shares the app asked for, oldest first; each sheet
 	// shows.
 	Shares []Share
+	// CaptureSurface answers headless core.Scope.Capture requests with PNG bytes
+	// or an error. target is the captured *View, or nil for the whole surface.
+	// When nil, headless capture answers core.CodeUnavailable.
+	CaptureSurface func(target *View) ([]byte, error)
 	// LookUps are the dictionary panels the app showed (desktop.LookUp), oldest first, where the environment sets CanLookUp.
 	LookUps []LookUp
 	// ReviewRequests counts the in-app store rating prompts the app asked for (core.Scope.RequestReview), where the environment sets CanRequestReview.
@@ -397,7 +410,7 @@ type App struct {
 	AppleSignIns          []AppleSignInRequest
 	AppleSignIn           func(r AppleSignInRequest) (core.AppleCredential, error)
 	AppleCredentialStates map[string]core.AppleCredentialState
-	// Products are what the store sells where the environment says Purchases. PurchaseRequests are the in-app purchase requests the app made, oldest first. PurchaseAnswer answers each purchase with the transaction the user buys, or an error, core.PurchaseCancelled for a user who closes the sheet and core.PurchasePending for one waiting for approval; without it a product among Products is bought and any other fails. A transaction bought joins Unfinished, and Entitlements unless consumable; FinishTransaction takes it out of Unfinished into Finished, by ID, and CurrentEntitlements answers Entitlements. SyncAnswer is what SyncPurchases answers, nil by default. UpdatePurchase delivers a transaction as the store does one made outside the app, and UnfinishedTransactions those the store hands the app as it starts.
+	// Products are what the store sells where the environment says Purchases. PurchaseRequests are the in-app purchase requests the app made, oldest first. PurchaseAnswer answers each purchase with the transaction the user buys, or an error, core.PurchaseCancelled for a user who closes the sheet and core.PurchasePending for one waiting for approval; without it a product among Products is bought and any other fails. A transaction bought joins Unfinished, and Entitlements unless consumable; FinishTransaction takes it out of Unfinished into Finished, by ID, and CurrentEntitlements answers Entitlements. SyncAnswer is what SyncPurchases answers, nil by default; ManageSubscriptionsError answers ManageSubscriptions, nil by default; RefundError fails RequestRefund and otherwise RefundStatus answers it, core.RefundSuccess by default. UpdatePurchase delivers a transaction as the store does one made outside the app, and UnfinishedTransactions those the store hands the app as it starts.
 	Products                 []core.Product
 	PurchaseRequests         []PurchaseRequest
 	PurchaseAnswer           func(r PurchaseRequest) (core.Transaction, error)
@@ -407,6 +420,7 @@ type App struct {
 	SyncAnswer               error
 	ManageSubscriptionsError error
 	RefundStatus             core.RefundStatus
+	RefundError              error
 	// transactions numbers the transactions the model's store makes.
 	transactions int
 	// Permissions is each permission's status as the platform answers it, PermissionNotAsked for one it does not hold; a request while not asked makes it PermissionAnswers' for it, the user granting it when that has none. Start makes both maps. PermissionSettings are the permissions whose settings the app opened, oldest first, and Guide the permission a guide shows, "" for none: GrantPermission and CloseGuide end it.

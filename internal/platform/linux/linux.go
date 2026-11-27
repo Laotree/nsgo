@@ -205,6 +205,8 @@ type window struct {
 	applying bool
 	// allocating counts the surface's size allocations in progress, which drain mount batches as they resize (resize).
 	allocating int
+	// deferAllocate counts synchronous resize drains inside allocateSurface: while positive, queueAllocate marks the Go view tree for immediate placement in the same size_allocate pass instead of calling gtk_widget_queue_allocate on widgets GTK is allocating.
+	deferAllocate int
 	// destroyPending is a WindowDestroy applied during an allocation, which the main loop carries out once GTK has returned from it (requestDestroy).
 	destroyPending bool
 	gpuMu          sync.Mutex
@@ -1008,6 +1010,9 @@ func (w *window) shutdown(forced bool) {
 	}
 	w.unwatchSession()
 	w.login.close()
+	if w.opener != nil && w.opener.login != nil {
+		w.opener.login.ownerClosed(w)
+	}
 	if w.watchingTimeZone {
 		w.watchingTimeZone = false
 		releaseTimeZoneWatcher()
@@ -1256,6 +1261,12 @@ func (w *window) apply(b *driver.MountBatch) {
 		case driver.ItemPickDirectories:
 			w.pickDirectories(*it.Directories, it.Count)
 			continue
+		case driver.ItemOpenDirectory:
+			w.openDirectory(it.Value, it.Count)
+			continue
+		case driver.ItemReleaseDirectory:
+			w.engine.Dispatch(driver.Event{Kind: driver.EventFiles, Count: it.Count})
+			continue
 		case driver.ItemPickScreenColor:
 			w.pickScreenColor(it.Count)
 			continue
@@ -1471,7 +1482,7 @@ func (w *window) apply(b *driver.MountBatch) {
 			resized := v.shownFrame().Size != old
 			w.moved(v)
 			if resized && v.widget != 0 {
-				gtkWidgetQueueAllocate(v.widget)
+				w.queueAllocate(v.widget)
 			}
 			if v.kind == driver.KindScroll {
 				rescroll = append(rescroll, v)
@@ -1717,7 +1728,7 @@ func (w *window) setRoot(id driver.NodeID) {
 			gtkWidgetUnparent(root.widget)
 		}
 		gtkWidgetSetParent(root.widget, w.surface)
-		gtkWidgetQueueAllocate(w.surface)
+		w.queueAllocate(w.surface)
 	}
 	gtkWidgetQueueDraw(w.surface)
 }
@@ -1889,7 +1900,7 @@ func (w *window) scrollTo(v *view, offset driver.Point) bool {
 func (w *window) moveOffset(v *view, offset driver.Point) {
 	v.offset = offset
 	if v.widget != 0 {
-		gtkWidgetQueueAllocate(v.widget)
+		w.queueAllocate(v.widget)
 		gtkWidgetQueueDraw(v.widget)
 	}
 	if sh := shaders.Load(); sh != nil && len(w.effects) > 0 {

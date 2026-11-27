@@ -205,27 +205,30 @@ func (p *painter) canvasOffscreen(v *view, ops []driver.DrawOp, width, height, s
 		return false
 	}
 	defer off.release()
-	world := p.m
-	p.flatten(func() {
-		var target *comObject
-		p.dc.call(dcGetTarget, uintptr(unsafe.Pointer(&target)))
-		p.dc.call(dcSetTarget, off.ptr())
-		pushed, split := p.pushed, p.split
-		p.pushed, p.split = nil, nil
-		p.setTransform(identity)
-		clear := colorF{}
-		p.dc.call(rtClear, uintptr(unsafe.Pointer(&clear)))
-		c := p.newCanvasPlayer(v, identity, width, height)
-		c.off, c.pixelScale = off, scale
-		c.playAll(ops)
-		for len(p.pushed) > 0 {
-			p.pop()
-		}
-		p.pushed, p.split = pushed, split
-		p.dc.call(dcSetTarget, target.ptr())
-		target.release()
-	})
-	p.setTransform(world)
+	var dc *comObject
+	if failed(p.g.device.call(d2dDeviceCreateDeviceContext, 0, uintptr(unsafe.Pointer(&dc)))) {
+		return false
+	}
+	defer dc.release()
+	dc.call(dcSetTarget, off.ptr())
+	dc.callF(rtSetDpi, 0b11, f32(96*scale), f32(96*scale))
+	dc.call(rtBeginDraw)
+	op := &painter{w: p.w, g: p.g, dc: dc, scale: scale, m: identity, alpha: 1, brush: p.brush}
+	op.setTransform(identity)
+	clear := colorF{}
+	dc.call(rtClear, uintptr(unsafe.Pointer(&clear)))
+	c := op.newCanvasPlayer(v, identity, width, height)
+	c.off, c.pixelScale = off, scale
+	c.playAll(ops)
+	for len(op.pushed) > 0 {
+		op.pop()
+	}
+	hr := dc.call(rtEndDraw, 0, 0)
+	dc.call(dcSetTarget, 0)
+	if failed(hr) {
+		return false
+	}
+	p.setTransform(p.m)
 	dst := rectF{0, 0, width, height}
 	p.dc.callF(rtDrawBitmap, 0b100, off.ptr(), uintptr(unsafe.Pointer(&dst)), f32(1), d2dInterpolationLinear, 0)
 	return true
@@ -849,61 +852,63 @@ func (c *canvasPlayer) mix(list *comObject) {
 		return
 	}
 	defer dst.release()
-	p.dc.call(rtFlush, 0, 0)
-	dst.call(bitmapCopyFromBitmap, 0, c.off.ptr(), 0)
 	var objects []*comObject
 	defer func() {
 		for _, o := range objects {
 			o.release()
 		}
 	}()
-	var e, out *comObject
-	if b, ok := c.st.composite.Blend(); ok {
-		e, out = c.effect(&clsidBlend, blendModes[b-driver.BlendMultiply], dst, list)
-	} else {
-		e, out = c.effect(&clsidComposite, compositeModes[c.st.composite], dst, list)
-	}
-	if out == nil {
-		return
-	}
-	objects = append(objects, e, out)
-	result := out
-	if mask := c.clipMask(pw, ph); mask != nil {
+	// Pop every active clip layer before flushing and copying c.off:
+	// Direct2D refuses Flush while a PushLayer is open, and any prior draws
+	// recorded inside an open clip layer only land in c.off once popped.
+	p.flatten(func() {
+		p.dc.call(rtFlush, 0, 0)
+		dst.call(bitmapCopyFromBitmap, 0, c.off.ptr(), 0)
+		var e, out *comObject
+		if b, ok := c.st.composite.Blend(); ok {
+			e, out = c.effect(&clsidBlend, blendModes[b-driver.BlendMultiply], dst, list)
+		} else {
+			e, out = c.effect(&clsidComposite, compositeModes[c.st.composite], dst, list)
+		}
+		if out == nil {
+			return
+		}
+		objects = append(objects, e, out)
+		p.setTransform(identity)
+		area := rectF{0, 0, c.width, c.height}
+		mask := c.clipMask(pw, ph)
+		if mask == nil {
+			p.dc.call(dcDrawImage, out.ptr(), 0, uintptr(unsafe.Pointer(&area)), d2dInterpolationLinear, compositeCopy)
+			return
+		}
 		objects = append(objects, mask)
-		e1, in := c.effect(&clsidComposite, compositeIn, mask, out)
-		e2, rest := c.effect(&clsidComposite, compositeDstOut, dst, mask)
-		objects = append(objects, e1, in, e2, rest)
-		if in == nil || rest == nil {
+		// Bake out into a flat bitmap before masking it to the clip, rather
+		// than chaining a second Composite effect over a Composite(PLUS) graph
+		// that shares dst as an input.
+		targetProps := props
+		targetProps.options = d2dBitmapTarget
+		var mixed *comObject
+		if failed(p.dc.callSize(dcCreateBitmap, pw, ph, 0, 0, uintptr(unsafe.Pointer(&targetProps)), uintptr(unsafe.Pointer(&mixed)))) {
 			return
 		}
-		e3, sum := c.effect(&clsidComposite, compositePlus, rest, in)
-		if sum == nil {
+		objects = append(objects, mixed)
+		p.dc.call(dcSetTarget, mixed.ptr())
+		p.dc.call(dcDrawImage, out.ptr(), 0, uintptr(unsafe.Pointer(&area)), d2dInterpolationLinear, compositeCopy)
+		p.dc.call(rtFlush, 0, 0)
+		p.dc.call(dcSetTarget, c.off.ptr())
+		e1, in := c.effect(&clsidComposite, compositeIn, mask, mixed)
+		if in == nil {
+			if e1 != nil {
+				objects = append(objects, e1)
+			}
 			return
 		}
-		objects = append(objects, e3, sum)
-		result = sum
-	}
-	// A copy ignores layers' clips: pop them around it.
-	pushed := p.pushed
-	for i := len(pushed) - 1; i >= 0; i-- {
-		if pushed[i].clip {
-			p.dc.call(rtPopAxisAlignedClip)
-		} else {
-			p.dc.call(rtPopLayer)
-		}
-	}
-	p.setTransform(identity)
-	area := rectF{0, 0, c.width, c.height}
-	p.dc.call(dcDrawImage, result.ptr(), 0, uintptr(unsafe.Pointer(&area)), d2dInterpolationLinear, compositeCopy)
-	for _, q := range pushed {
-		p.setTransform(q.m)
-		if q.clip {
-			r := q.rect
-			p.dc.call(rtPushAxisAlignedClip, uintptr(unsafe.Pointer(&r)), d2dAntialiasAliased)
-		} else {
-			p.pushLayerRaw(q.opacity, q.mask, q.brush)
-		}
-	}
+		objects = append(objects, e1, in)
+		// Cut the clip region out of c.off and add the masked mixed pixels back:
+		// c.off = dst*(1 - mask.a) + mixed*mask.a.
+		p.dc.call(dcDrawImage, mask.ptr(), 0, uintptr(unsafe.Pointer(&area)), d2dInterpolationLinear, compositeDstOut)
+		p.dc.call(dcDrawImage, in.ptr(), 0, uintptr(unsafe.Pointer(&area)), d2dInterpolationLinear, compositePlus)
+	})
 	p.setTransform(c.world)
 }
 

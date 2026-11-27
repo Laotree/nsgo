@@ -191,10 +191,15 @@ licenses:
 Add a library, a Go module, with `nsgo add`, which is `go get` with its plan shown first:
 
 ```sh
+nsgo add -list                           # list libraries and components in NSGo's built-in index
+nsgo add -list icons flags               # filter case-insensitively by words across name, description and tags
+nsgo add media                           # resolve a short name in NSGo's built-in index
 nsgo add github.com/acme/chart           # its newest release, unless go.mod has it already
 nsgo add github.com/acme/chart@v1.3.0    # this version, even one below go.mod's
 nsgo add -dry-run github.com/acme/chart  # print the plan and write nothing
 ```
+
+Bare names (without a dot in their first segment) resolve only in NSGo's built-in index (`cmd/nsgo/registry.yaml`, embedded in `nsgo` with nothing fetched or cached). A bare name plans the same way as its module path, using the entry's `version` when present else `@upgrade`, and refuses a module with no release tag (`<name> has no release; add its module by path with a version`). Unknown names suggest `nsgo add -list`. `nsgo add -list [words...]` prints each matching item's name, kind (`library` or `component`), module path and description, and works inside or outside a module. Items with kind `component` are listed in the index and refused by `nsgo add` until component copying lands.
 
 ```text
 github.com/acme/chart
@@ -548,6 +553,8 @@ Stores reject apps that update themselves, so upload a `store` build, never a di
 
 Read `updater.Status(cx)` inside a binding to follow `Capability`, `AutomaticChecks`, `AutomaticDownloads`, `Available`, `Notes` and `LastCheck`, and on Linux and Android an update's `Phase`, `Loaded` and `Total` (`Fraction()` for a progress bar). `updater.SetAutomaticChecks(cx, on)` persists the user's choice and changes the daily scheduler at runtime. Sparkle and WinSparkle own their preferences; Linux, Android and iOS keep the choice in a private storage partition. `updater.SetAutomaticDownloads(cx, on)` is supported only on macOS, defaulting to `updates.automatic_downloads`; other platforms report false and ignore the setter. Unsupported and externally managed builds report both settings false. WinSparkle reports found-update metadata by reading the appcast after its found callback; it still controls installation. Linux resolves Debian or Arch package ownership and AppImage identity at launch; those copies report `ManagedSelf`, while other unpackaged copies report `ManagedPage` before any check.
 
+TSX apps import the same capabilities from `nsgo/updater`: `checkForUpdate`, `checkInBackground`, `checkDaily`, `capability`, reactive `status`, `setAutomaticChecks` and `setAutomaticDownloads`, running on the same platform updaters. Sandboxed plugins cannot import `nsgo/updater` unless the host names it in `Sandbox.Modules`.
+
 ## Launch at login
 
 `desktop.SetLaunchAtLogin(cx, on)` registers the app with the platform's login mechanism, and `desktop.LaunchAtLogin(cx, done)` reads it. An MSIX built by the current tool includes a disabled startup task automatically; enabling it respects the user's Startup apps switch and administrator policy. Ordinary Windows and Linux installs keep their Run value and XDG autostart entry. macOS uses the bundled app's native login service.
@@ -668,7 +675,7 @@ Each target writes a project for its platform's developer tool, also in `dist/re
 
 `miniprogram.appid` gives the mini program's AppID on each platform (`wechat`, `qq`, `alipay`, `douyin`); without one, WeChat DevTools previews it with its tourist AppID and the other tools ask for one. On WeChat, `-run` and each `dev` rebuild close and auto-open the project through the CLI, so DevTools compiles the fresh files. This was checked with DevTools 2.01.2510290. The platform's navigation bar shows the app's title; with `custom_navigation`, the app fills the page and its safe area keeps it clear of the menu button. The app reads the phone's OS with `Env.Simulated` true, as on the web with `--nsgo-os`: a stack's pages show their own `Header`, as no system header replaces it. QQ, Alipay and Douyin have not been tried in their tools yet, and Alipay does not yet take back through the app, keyframes or the keyboard's height.
 
-Mini programs are experimental. A mini program runs Go apps alone, not TSX, and the platforms hold the app's compressed module to 2 MB: an app of a few screens on `base` fits, as `examples/gallery-miniprogram` does, one of `ui`'s controls does not yet, and `build` says when one does not. Shaders draw nothing there, and web views, videos, native components and the app's font files are not shown yet.
+Mini programs are experimental. A mini program runs Go apps alone, not TSX, and the platforms hold the app's compressed module to 2 MB: an app of a few screens on `base` fits, as `examples/gallery-miniprogram` does, one of `ui`'s controls does not yet, and `build` says when one does not. Shaders draw nothing there, and web views and native components are not shown yet; app font files (`loadFontFace`), tinted images, off-baseline inline attachments, selection areas and `<video>` playback are wired across all four platforms' templates though still unchecked in vendor DevTools.
 
 ## HarmonyOS
 

@@ -213,6 +213,8 @@ func TestSandboxHoldsAPackageToItsCapabilities(t *testing.T) {
 	auth: () => AuthSession.start((redirect) => "https://provider.example/?redirect_uri=" + redirect).result,
 	signInWithApple: () => SignInWithApple.signIn(),
 	purchases: () => Purchases.products(["coins"]),
+	manageSubscriptions: () => Purchases.manageSubscriptions(),
+	requestRefund: () => Purchases.requestRefund("42"),
 	granted: () => host.call("greet", "Ada"),
 	refused: () => host.call("secret"),
 	timers: () => { for (let i = 0; i < 5; i++) setTimeout(() => {}, 100000); },
@@ -221,23 +223,25 @@ func TestSandboxHoldsAPackageToItsCapabilities(t *testing.T) {
 	secrets: () => Secrets.get("token"),
 	`, pkg.Capabilities{Network: &pkg.Network{Hosts: []string{"api.example.com"}}, Host: []string{"greet"}}, tsx.Sandbox{Host: greeter()})
 	want := map[string]string{
-		"allowed":         "https://api.example.com/a",
-		"other":           "ERR_ACCESS_DENIED network",
-		"redirect":        "ERR_ACCESS_DENIED network",
-		"file":            "ERR_ACCESS_DENIED network",
-		"big":             "ERR_NSH_QUOTA_EXCEEDED ",
-		"data":            "hi",
-		"clipboard":       "ERR_ACCESS_DENIED clipboard",
-		"openUrl":         "ERR_ACCESS_DENIED openUrl",
-		"auth":            "ERR_ACCESS_DENIED authSession",
-		"signInWithApple": "ERR_ACCESS_DENIED signInWithApple",
-		"purchases":       "ERR_ACCESS_DENIED purchases",
-		"granted":         "hi Ada",
-		"refused":         "ERR_ACCESS_DENIED host",
-		"timers":          "ERR_NSH_QUOTA_EXCEEDED ",
-		"storage":         "k",
-		"full":            "ERR_NSH_QUOTA_EXCEEDED ",
-		"secrets":         "ERR_ACCESS_DENIED secrets",
+		"allowed":             "https://api.example.com/a",
+		"other":               "ERR_ACCESS_DENIED network",
+		"redirect":            "ERR_ACCESS_DENIED network",
+		"file":                "ERR_ACCESS_DENIED network",
+		"big":                 "ERR_NSH_QUOTA_EXCEEDED ",
+		"data":                "hi",
+		"clipboard":           "ERR_ACCESS_DENIED clipboard",
+		"openUrl":             "ERR_ACCESS_DENIED openUrl",
+		"auth":                "ERR_ACCESS_DENIED authSession",
+		"signInWithApple":     "ERR_ACCESS_DENIED signInWithApple",
+		"purchases":           "ERR_ACCESS_DENIED purchases",
+		"manageSubscriptions": "ERR_ACCESS_DENIED purchases",
+		"requestRefund":       "ERR_ACCESS_DENIED purchases",
+		"granted":             "hi Ada",
+		"refused":             "ERR_ACCESS_DENIED host",
+		"timers":              "ERR_NSH_QUOTA_EXCEEDED ",
+		"storage":             "k",
+		"full":                "ERR_NSH_QUOTA_EXCEEDED ",
+		"secrets":             "ERR_ACCESS_DENIED secrets",
 	}
 	for k, w := range want {
 		if got[k] != w {
@@ -293,6 +297,32 @@ mount(() => <View>
 	app.WaitFor("id:web", 10*time.Second)
 	if v := app.Find("id:web"); v.Web.Source.Src != "https://call.example.com/" || v.Web.Media != core.WebMicrophone {
 		t.Fatalf("the web view loads %q capturing %v", v.Web.Source.Src, v.Web.Media)
+	}
+}
+
+func TestSandboxHoldsWebViewNavigationHosts(t *testing.T) {
+	p := verified(t, `import { mount, View, WebView } from "nsgo";
+mount(() => <View>
+	<WebView testID="ok" html="<a href='https://allowed.example/'>ok</a>" style={{ height: 50 }} />
+	<WebView testID="denied" src="https://denied.example/" style={{ height: 50 }} />
+</View>);`, pkg.Capabilities{WebView: &pkg.WebView{Hosts: []string{"allowed.example", "extra.example"}}})
+	app := nsgotest.Start(t, func(cx *core.Scope) core.Node {
+		return tsx.View{Package: p, Sandbox: tsx.Sandbox{
+			Grant:         &pkg.Capabilities{WebView: &pkg.WebView{Hosts: []string{"allowed.example"}}},
+			WebUnisolated: true,
+		}}
+	})
+	app.WaitFor("id:ok", 10*time.Second)
+	okView := app.Find("id:ok").Web
+	if !okView.Restricted || okView.Hosts != "allowed.example" {
+		t.Fatalf("restricted web view config = restricted:%v hosts:%q, want restricted:true hosts:\"allowed.example\"", okView.Restricted, okView.Hosts)
+	}
+	if !okView.Navigable("https://allowed.example/page") || okView.Navigable("https://extra.example/") || okView.Navigable("https://denied.example/") {
+		t.Fatalf("unexpected Navigable decisions for hosts %q", okView.Hosts)
+	}
+	deniedView := app.Find("id:denied").Web
+	if deniedView.Source.Src != "about:blank" {
+		t.Fatalf("denied initial web view src = %q, want about:blank", deniedView.Source.Src)
 	}
 }
 

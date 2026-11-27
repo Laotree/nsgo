@@ -547,11 +547,34 @@ func (w *window) pickDirectories(r driver.DirectoriesRequest, id uint32) {
 		}
 		var dirs []driver.Directory
 		for _, p := range paths {
-			dirs = append(dirs, driver.Directory{Path: p})
+			d := driver.Directory{Path: p}
+			if r.Persist {
+				d.Token = p
+			}
+			dirs = append(dirs, d)
 		}
 		ev.Data = dirs
 		w.engine.Dispatch(ev)
 	})
+}
+
+// openDirectory reopens a persisted folder path on Windows.
+func (w *window) openDirectory(token string, id uint32) {
+	ev := driver.Event{Kind: driver.EventFiles, Count: id}
+	if !filepath.IsAbs(token) {
+		ev.Text = "windows: directory token is not an absolute path"
+		w.engine.Dispatch(ev)
+		return
+	}
+	info, err := os.Stat(token)
+	if err != nil {
+		ev.Text = err.Error()
+	} else if !info.IsDir() {
+		ev.Text = "windows: persisted path is not a directory"
+	} else {
+		ev.Data = driver.Directory{Name: filepath.Base(token), Path: token, Token: token}
+	}
+	w.engine.Dispatch(ev)
 }
 
 // saveFile queues a save: the save dialog suggests r's name, and the
@@ -1207,9 +1230,13 @@ func (w *window) shownDark() bool {
 func (w *window) setAppearance(a driver.Appearance) {
 	dark := w.shownDark()
 	w.appearance = a
-	w.darkTitleBar(w.shownDark())
+	next := w.shownDark()
+	w.darkTitleBar(next)
+	if next != dark {
+		w.refreshMaterial()
+	}
 	darkMenus(a)
-	if w.shownDark() != dark && w.chrome.bar != 0 && menuHasTemplateIcon(w.chrome.menu) {
+	if next != dark && w.chrome.bar != 0 && menuHasTemplateIcon(w.chrome.menu) {
 		w.showMenuBar()
 	}
 	w.redrawAll()
@@ -1399,27 +1426,32 @@ func (w *window) fitPanel(f driver.WindowFrame) {
 	w.panelFrameSerial++
 	serial := w.panelFrameSerial
 	target := rect{current.Left, current.Top, current.Left + w.px(f.Width), current.Top + w.px(f.Height)}
-	if w.visible && w.dock.Edge != driver.WindowPlaceDefault {
-		if docked, ok := w.dockedPanelFrame(f.Width, f.Height); ok {
-			w.setPanelFrame(current, docked, f.Animated)
+	if w.visible {
+		switch {
+		case w.dock.Edge != driver.WindowPlaceDefault:
+			if docked, ok := w.dockedPanelFrame(f.Width, f.Height); ok {
+				w.setPanelFrame(current, docked, f.Animated)
+				return
+			}
+			// Keep the requested size for a later show, but don't jump while visible.
+			w.panelMotion.Stop()
+			w.dockPlacementFailed()
+			if w.panelFrameSerial == serial && w.hwnd != 0 && !w.destroying && !w.visible {
+				w.setPanelFrame(current, target, false)
+			}
 			return
+		case w.placement != driver.WindowPlaceDefault:
+			if placed, ok := w.besidePanelFrame(w.anchorBounds, w.placement, f.Width, f.Height); ok {
+				w.setPanelFrame(current, placed, false)
+				return
+			}
 		}
-		// Keep the requested size for a later show, but don't jump while visible.
-		w.panelMotion.Stop()
-		w.dockPlacementFailed()
-		if w.panelFrameSerial == serial && w.hwnd != 0 && !w.destroying && !w.visible {
-			w.setPanelFrame(current, target, false)
-		}
-		return
 	}
 	w.setPanelFrame(current, target, false)
 	if serial != w.panelFrameSerial || !w.visible {
 		return
 	}
-	switch {
-	case w.placement != driver.WindowPlaceDefault:
-		w.placeBeside(w.anchorBounds, w.placement)
-	case w.anchor != 0:
+	if w.anchor != 0 {
 		w.placeAtTray(w.anchor)
 	}
 }
@@ -1486,11 +1518,13 @@ func (w *window) placeAtTray(id uint32) bool {
 	return true
 }
 
-// placeBeside moves a panel beside at, a rectangle in Env.Displays' points, on side, sized at the scale of the monitor it goes on; false where there is no monitor or the panel has no size yet.
-func (w *window) placeBeside(at driver.Bounds, side driver.WindowPlacement) bool {
+// besidePanelFrame puts the requested size beside at on side, on the monitor
+// that holds at's center at that monitor's scale. Without a new size it uses
+// the panel's current size in points, as on show.
+func (w *window) besidePanelFrame(at driver.Bounds, side driver.WindowPlacement, width, height driver.Points) (rect, bool) {
 	monitors := monitorLayout()
 	if len(monitors) == 0 {
-		return false
+		return rect{}, false
 	}
 	center := driver.Point{X: at.Origin.X + at.Size.Width/2, Y: at.Origin.Y + at.Size.Height/2}
 	on := monitors[0]
@@ -1500,14 +1534,32 @@ func (w *window) placeBeside(at driver.Bounds, side driver.WindowPlacement) bool
 			break
 		}
 	}
-	width, height, ok := w.panelPixels(on.monitor)
+	var cx, cy int32
+	if width > 0 && height > 0 {
+		cx, cy = on.px(width), on.px(height)
+	} else {
+		var ok bool
+		cx, cy, ok = w.panelPixels(on.monitor)
+		if !ok {
+			return rect{}, false
+		}
+	}
+	if cx <= 0 || cy <= 0 {
+		return rect{}, false
+	}
+	size := driver.Size{Width: driver.Points(float64(cx) / on.scale), Height: driver.Points(float64(cy) / on.scale)}
+	p, _ := driver.PlaceWindow(at, size, on.display.VisibleFrame, side)
+	x, y := on.pixel(p.X, p.Y)
+	return rect{x, y, x + cx, y + cy}, true
+}
+
+// placeBeside moves a panel beside at, a rectangle in Env.Displays' points, on side, sized at the scale of the monitor it goes on; false where there is no monitor or the panel has no size yet.
+func (w *window) placeBeside(at driver.Bounds, side driver.WindowPlacement) bool {
+	r, ok := w.besidePanelFrame(at, side, 0, 0)
 	if !ok {
 		return false
 	}
-	size := driver.Size{Width: driver.Points(float64(width) / on.scale), Height: driver.Points(float64(height) / on.scale)}
-	p, _ := driver.PlaceWindow(at, size, on.display.VisibleFrame, side)
-	x, y := on.pixel(p.X, p.Y)
-	w.movePanel(x, y, width, height)
+	w.movePanel(r.Left, r.Top, r.Right-r.Left, r.Bottom-r.Top)
 	return true
 }
 

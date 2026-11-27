@@ -32,13 +32,13 @@ core.View{
 
 设置 `Mobile`（TSX 中为 `mobile`）后，Windows、macOS 和 Linux 上的页面按手机所见的样子显示，适合 YouTube Shorts 这类只在手机上用上下滑动切换视频的网站：页面得到手机的 user agent（设置了 `UserAgent` 时以它为准）和没有悬停的触摸屏，鼠标拖动、以及在不可滚动处的滚轮或触控板滚动，都会作为手指滑动送达页面。Windows 像 Chrome 的设备模式那样模拟手机。macOS 和 Linux 用脚本实现，因此页面的样式表仍看到鼠标，触摸事件也不是可信事件，页面可能忽略它们。iOS、Android、HarmonyOS、Web 和小程序按原样显示页面。
 
-在 macOS、iOS、Windows 和 Linux 上，`OnOpenWindow` 接收网页的新窗口请求。WebView 不会弹出窗口。应用可根据请求的 `URL` 和 `UserInitiated` 决定通过 `Ref.Load` 在同一视图导航、在其他位置打开 URL，或者忽略请求。受限 WebView 会通过 `OnError` 报告被拒绝的请求。
+在 macOS、iOS、Windows 和 Linux 上，`OnOpenWindow` 接收网页的新窗口请求（在 Web 上也接收受限 HTML 页面的新窗口请求）。WebView 不会弹出窗口。应用可根据请求的 `URL` 和 `UserInitiated` 决定通过 `Ref.Load` 在同一视图导航、在其他位置打开 URL，或者忽略请求。受限 WebView 会通过 `OnError` 报告被拒绝的请求，并在 Web 上对初始来源、`Ref.Load`、`HTML` 和 `data:text/html` 页面强制执行 `webview` 主机与协议授权，同时通过 iframe sandbox 阻止弹窗、下载与顶层窗口跳转（跨域 `http(s)` 页面加载后的帧内导航受浏览器同源策略隐藏）。
 
 设置 `OnDownload` 后，macOS、iOS、Linux、Windows 和 Android 上的 WebView 会保存网页下载的文件。下载文件保存在应用数据目录的 `downloads/<id>/<file name>` 下，并报告开始、完成（附字节数）或失败；未设置 `OnDownload` 的视图以及受限视图会取消下载。
 
 `core.Video` 用平台的播放器播放文件或 URL。在 macOS、iOS 和 tvOS 上，`Video.AudioSource` 可以为有固定时长的视频指定单独的音频文件或 URL。视频使用该来源的音轨，画面和声音同时开始，`Ref.Seek` 在同一条时间轴上移动两者。播放时长由画面决定，较短的音轨播完后保持静音。
 
-带透明通道的视频会透出它后面的内容：macOS 上用 `.mov` 里带 alpha 的 HEVC（iOS 尚未验证），Linux 上用 WebM 里带 alpha 的 VP9，并需要 GStreamer 的 codecalpha 插件（`gstreamer1.0-plugins-bad`，Linux 安装包可以在 `nsgo.yaml` 里把它列为推荐依赖）。在 macOS、iOS、Windows 和 Linux 上，本地视频的透明通道无法保留时（Apple 平台上的 WebM、Linux 上的 HEVC，以及在 Windows 机器上验证 Media Foundation 的透明通道输出之前，Windows 上的任何格式），`OnError` 会说明原因，而不是把视频显示在不透明的方框里：这个错误是 `*core.MediaError`，其 `Reason` 为 `core.MediaErrorAlphaUnsupported`，应用可以据此改用自己的解码器播放这段视频。Android 和 Web 平台，以及各平台上的远程 URL，会按解码器的输出播放这类视频，可能是不透明的。
+带透明通道的视频会透出它后面的内容：macOS 上用 `.mov` 里带 alpha 的 HEVC（iOS 使用同样的非不透明播放器图层），Linux 上用 WebM 里带 alpha 的 VP9，并需要 GStreamer 的 codecalpha 插件（`gstreamer1.0-plugins-bad`，Linux 安装包可以在 `nsgo.yaml` 里把它列为推荐依赖，开启 `Controls` 时同样保留透明背景），Web 上则由支持 VP9 alpha WebM 或带 alpha HEVC 的浏览器透出底层视图。在 macOS、iOS、Windows 和 Linux 上，本地视频的透明通道无法保留时（Apple 平台上的 WebM、Linux 上的 HEVC，以及在 Windows 机器上验证 Media Foundation 的透明通道输出之前，Windows 上的任何格式），`OnError` 会说明原因，而不是把视频显示在不透明的方框里：这个错误是 `*core.MediaError`，其 `Reason` 为 `core.MediaErrorAlphaUnsupported`，应用可以据此改用自己的解码器播放这段视频。Android（使用非不透明的 `TextureView`）和 Web 平台，以及各平台上的远程 URL，会按解码器的输出播放这类视频，可能是不透明的。
 
 在 Apple、Android、Windows、Linux 和 Web 平台，`OnPause` 和 `OnPlay` 会跟随内置控件。控件暂停时，`OnPause` 给出 `VideoPauseControls`。`Paused` 仅在打开来源或值变化时应用。调整音量、速度和布局会保留原生暂停或播放状态，包括控件在 `Paused` 仍为 true 时开始播放的情况。如果应用显示自己的播放按钮，将状态绑定到 `PausedFunc`，并在这些回调中更新它。
 

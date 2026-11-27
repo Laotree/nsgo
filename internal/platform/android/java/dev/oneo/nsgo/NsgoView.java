@@ -735,6 +735,9 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
                 ui.post(this::environment);
             });
         }
+        if (GameServices.isSdkPresent()) {
+            GameServices.probeState(activity(), report -> write(Protocol.GAME_SERVICES_REPORT, report));
+        }
         if (measuring) startTicking();
     }
 
@@ -1527,7 +1530,8 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
                 break;
             }
             case Protocol.EXT_GAME_SERVICES:
-                gameServicesUnavailable(payload);
+                // The command's JSON follows the kind byte.
+                GameServices.handle(activity(), Arrays.copyOfRange(payload, 1, payload.length), report -> write(Protocol.GAME_SERVICES_REPORT, report));
                 break;
             case Protocol.EXT_CLOUD_STORAGE:
                 // The command's JSON follows the kind byte.
@@ -1673,6 +1677,7 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
             // The first byte's eight bits are taken: what else the device can do follows in a second.
             d.writeByte((Speaker.available(getContext()) ? 1 : 0) | (Scanner.available(getContext()) ? 2 : 0)
                     | (Services.canRequestReview(activity()) ? 4 : 0) | first.networkFlags
+                    | (GameServices.isSdkPresent() ? 64 : 0)
                     | (CloudStorage.signedIn ? 128 : 0));
             int idiom = config.smallestScreenWidthDp >= 600 ? Protocol.IDIOM_TABLET : Protocol.IDIOM_PHONE;
             if ((config.uiMode & Configuration.UI_MODE_TYPE_MASK) == Configuration.UI_MODE_TYPE_TELEVISION) {
@@ -1713,8 +1718,8 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
             writeDisplay(d);
             // Optional environment tail, after the display, for mobile.OpenedURL.
             Protocol.writeString(d, first.openedURL);
-            // The third capability byte's bits are all taken: a fourth ends the environment, where readEnvironment reads it only if a runtime wrote it. Its bits: Protocol.CAP_EXTENDED_SENSORS, Protocol.CAP_AUTH_SESSION, Protocol.CAP_VIDEO_PIP, Protocol.CAP_CAPTURE and Protocol.CAP_FOLDER_HANDLES.
-            d.writeByte(Protocol.CAP_EXTENDED_SENSORS | Protocol.CAP_AUTH_SESSION | Protocol.CAP_VIDEO_PIP | Protocol.CAP_CAPTURE | Protocol.CAP_FOLDER_HANDLES);
+            // The third capability byte's bits are all taken: a fourth ends the environment, where readEnvironment reads it only if a runtime wrote it. Its bits: Protocol.CAP_EXTENDED_SENSORS, Protocol.CAP_AUTH_SESSION, Protocol.CAP_VIDEO_PIP, Protocol.CAP_CAPTURE, Protocol.CAP_FOLDER_HANDLES and Protocol.CAP_FOLDER_PERSIST.
+            d.writeByte(Protocol.CAP_EXTENDED_SENSORS | Protocol.CAP_AUTH_SESSION | Protocol.CAP_VIDEO_PIP | Protocol.CAP_CAPTURE | Protocol.CAP_FOLDER_HANDLES | Protocol.CAP_FOLDER_PERSIST);
         } catch (IOException impossible) {
             throw new AssertionError(impossible);
         }
@@ -2011,7 +2016,8 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
             return;
         }
         if (d.folder) {
-            answerDocuments(d, Services.pickedTree(context, created), "", false);
+            String token = d.persist ? Services.persistTree(context, created, data) : "";
+            answerDocuments(d, Services.pickedTree(context, created, token), "", false);
             return;
         }
         java.util.List<android.net.Uri> uris = Services.picked(data, d.limit);
@@ -2459,6 +2465,10 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
                     b.write(read);
                 } else if (op == Protocol.FOLDER_CLOSE) {
                     folderHandles.close(in.readInt());
+                } else if (op == Protocol.FOLDER_REOPEN) {
+                    Services.reopenTree(context, Protocol.readString(in), b);
+                } else if (op == Protocol.FOLDER_RELEASE) {
+                    Services.releaseTree(context, Protocol.readString(in));
                 } else {
                     String tree = Protocol.readString(in), document = Protocol.readString(in);
                     long off = in.readLong();
@@ -4072,9 +4082,9 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
             }
             case Protocol.ITEM_PICK_DIRECTORIES: {
                 long count = in.readInt() & 0xffffffffL;
-                // The tree picker picks one folder, whatever the limit.
-                in.readInt();
-                startDocuments(new Services.Documents(count, 1, null, true), Services::startFolder);
+                // The tree picker picks one folder; bit 31 requests a persistable read grant.
+                boolean persist = (in.readInt() & Protocol.PICK_DIR_PERSIST) != 0;
+                startDocuments(new Services.Documents(count, 1, null, true, persist), a -> Services.startFolder(a, persist));
                 break;
             }
             case Protocol.ITEM_SAVE_FILE:
@@ -5469,23 +5479,6 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
             throw new AssertionError(impossible);
         }
         write(Protocol.COOKIES_SET, bytes.toByteArray());
-    }
-
-    /** Answers an EXT_GAME_SERVICES command, whose JSON follows the kind byte in payload: this runtime has no Play Games Services hook, so a command's request hears that game services are unavailable rather than waiting for a report. */
-    private void gameServicesUnavailable(byte[] payload) {
-        long id = 0;
-        try {
-            id = new JSONObject(new String(payload, 1, payload.length - 1, java.nio.charset.StandardCharsets.UTF_8)).optLong("id");
-        } catch (JSONException e) {
-            Log.w(TAG, "invalid game services message from app");
-        }
-        if (id == 0) return;
-        try {
-            JSONObject report = new JSONObject().put("type", "result").put("id", id).put("error", "unavailable");
-            write(Protocol.GAME_SERVICES_REPORT, report.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        } catch (JSONException impossible) {
-            throw new AssertionError(impossible);
-        }
     }
 
     /** Takes a RECORDING message, on the engine's reader thread: a stop and the app's taking of an earlier recording go to the service at once, a start and an authorize to the UI thread. */

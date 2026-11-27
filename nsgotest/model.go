@@ -1045,7 +1045,48 @@ func (a *App) apply(b *driver.MountBatch) {
 			if a.PickDirectories != nil {
 				dirs = a.PickDirectories(pick)
 			}
+			if pick.Persist {
+				for i := range dirs {
+					if dirs[i].Token == "" && dirs[i].Path != "" {
+						dirs[i].Token = dirs[i].Path
+					}
+					if dirs[i].Token != "" {
+						if a.PersistedDirectories == nil {
+							a.PersistedDirectories = map[string]driver.Directory{}
+						}
+						a.PersistedDirectories[dirs[i].Token] = dirs[i]
+					}
+				}
+			}
 			a.post(driver.Event{Kind: driver.EventFiles, Count: it.Count, Data: dirs})
+		case driver.ItemOpenDirectory:
+			ev := driver.Event{Kind: driver.EventFiles, Count: it.Count}
+			if a.OpenDirectory != nil {
+				dir, err := a.OpenDirectory(it.Value)
+				if err != nil {
+					ev.Text = err.Error()
+				} else {
+					ev.Data = dir
+				}
+			} else if dir, ok := a.PersistedDirectories[it.Value]; ok {
+				if dir.Token == "" {
+					dir.Token = it.Value
+				}
+				ev.Data = dir
+			} else {
+				ev.Text = "directory grant is no longer held"
+			}
+			a.post(ev)
+		case driver.ItemReleaseDirectory:
+			a.ReleasedDirectories = append(a.ReleasedDirectories, it.Value)
+			delete(a.PersistedDirectories, it.Value)
+			ev := driver.Event{Kind: driver.EventFiles, Count: it.Count}
+			if a.ReleaseDirectory != nil {
+				if err := a.ReleaseDirectory(it.Value); err != nil {
+					ev.Text = err.Error()
+				}
+			}
+			a.post(ev)
 		case driver.ItemPickScreenColor:
 			ev := driver.Event{Kind: driver.EventFiles, Count: it.Count}
 			if a.PickScreenColor != nil {
@@ -1055,7 +1096,6 @@ func (a *App) apply(b *driver.MountBatch) {
 			}
 			a.post(ev)
 		case driver.ItemSaveFile:
-
 			a.chooseSaveDestination(it)
 		case driver.ItemSavePreflightAnswer:
 			a.answerSavePreflight(it)
@@ -1104,7 +1144,16 @@ func (a *App) apply(b *driver.MountBatch) {
 			a.ReviewRequests++
 		case driver.ItemCapture:
 			if a.target == nil {
-				a.post(driver.Event{Kind: driver.EventFiles, Count: it.Count, Text: driver.NoCapture})
+				if a.CaptureSurface != nil {
+					var target *View
+					if it.ID != 0 {
+						target = a.views[it.ID]
+					}
+					data, err := a.CaptureSurface(target)
+					a.post(driver.CaptureResult(it.Count, data, err))
+				} else {
+					a.post(driver.Event{Kind: driver.EventFiles, Count: it.Count, Text: driver.NoCapture})
+				}
 			}
 		case driver.ItemShare:
 			a.Shares = append(a.Shares, Share{Files: slices.Clone(it.Share.Files), Text: it.Share.Text, From: it.Share.From})
@@ -1565,13 +1614,16 @@ func (a *App) setWebCookies(id uint32, cookies []core.WebCookie) {
 			return
 		}
 	}
+	now := a.Clock.WallTime()
 	for _, c := range cookies {
 		// The store keeps a cookie without a path at "/", as the platforms list it.
 		c.Path = c.CookiePath()
 		a.WebCookies = slices.DeleteFunc(a.WebCookies, func(o core.WebCookie) bool {
 			return o.Name == c.Name && strings.EqualFold(o.Domain, c.Domain) && o.CookiePath() == c.CookiePath()
 		})
-		a.WebCookies = append(a.WebCookies, c)
+		if c.Expires.IsZero() || c.Expires.After(now) {
+			a.WebCookies = append(a.WebCookies, c)
+		}
 	}
 	a.post(ev)
 }

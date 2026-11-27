@@ -364,6 +364,58 @@ jobs:
           GSK_RENDERER: cairo
         run: xvfb-run -a go tool nsgo test -target linux -run '^TestCanvasImageTint$' ./internal/testhost/testdata/capture
 
+  linux-gstreamer-128:
+    name: Linux audio (GStreamer 1.28)
+    runs-on: depot-ubuntu-24.04-4
+    container:
+      image: ubuntu:26.04
+    timeout-minutes: 15
+    steps:
+      - name: Install native audio test dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y ca-certificates curl git libgtk-4-dev libgtk-4-media-gstreamer xvfb pulseaudio gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-pulseaudio gstreamer1.0-libav
+          gst-inspect-1.0 --version
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test Linux audio on GStreamer 1.28
+        env:
+          GDK_BACKEND: x11
+          GSK_RENDERER: cairo
+          PULSE_SINK: nsgo_test
+        run: |
+          mkdir -p /tmp/nsgo-xdg/pulse
+          chmod 700 /tmp/nsgo-xdg
+          export XDG_RUNTIME_DIR=/tmp/nsgo-xdg
+          HOME=/tmp/nsgo-xdg pulseaudio -n --exit-idle-time=-1 --disallow-exit --disable-shm --no-cpu-limit \
+            --load="module-null-sink sink_name=nsgo_test" \
+            --load="module-native-protocol-unix auth-anonymous=1 auth-cookie-enabled=0 socket=/tmp/nsgo-xdg/pulse/native" \
+            >/tmp/pa.log 2>&1 &
+          PA_PID=$!
+          trap 'kill $PA_PID 2>/dev/null || true' EXIT
+          export PULSE_SERVER=unix:/tmp/nsgo-xdg/pulse/native
+          i=0
+          while [ "$i" -lt 30 ]; do
+            if HOME=/tmp/nsgo-xdg pactl info >/dev/null 2>&1; then
+              break
+            fi
+            sleep 0.1
+            i=$((i + 1))
+          done
+          if ! HOME=/tmp/nsgo-xdg pactl set-default-sink nsgo_test; then
+            cat /tmp/pa.log
+            exit 1
+          fi
+          xvfb-run -a go tool nsgo test ./internal/platform/linux -run '^TestLinuxAudio' -- -count=1
+
   # Vet compiles every host package without running a test, so it shares
   # nothing with the suite and runs beside it on a runner of its own instead of
   # ahead of it. The suite then starts 2m38s earlier, its median wait for the vet.
@@ -927,8 +979,12 @@ jobs:
         run: go tool nsgo test -target windows -timeout 1m ./testdata/devtools-geometry
       - name: Test native canvas image tint
         run: go tool nsgo test -run '^TestCanvasImageTint$' ./internal/platform/windows
+      - name: Test native canvas compositing inside clips
+        run: go tool nsgo test -run '^TestCanvasCompositeInClip$' ./internal/platform/windows
       - name: Test native window visibility
         run: go tool nsgo test -target windows -run TestWindowStateReadsNativeVisibility ./internal/testhost/testdata/windowstate
+      - name: Test caption buttons, materials and appearance refresh
+        run: go tool nsgo test -run '^TestCaptionButtonsAndMaterialFollowTheApp$' ./internal/platform/windows
       - name: Compare Direct2D atlas pixels in direct and cached drawing
         run: go tool nsgo test -run '^TestCanvasAtlasDrawsLikeImages$' ./internal/platform/windows
       - name: Run the many-sprite and mesh canvas scenarios
@@ -962,6 +1018,8 @@ jobs:
         run: go tool nsgo test -run '^TestDirectionMirrorsNativeControls$' ./internal/platform/windows
       - name: Test native network reachability
         run: go tool nsgo test -run '^TestNetworkMonitorReadsNetworkListManager$' ./internal/platform/windows
+      - name: Test hidden title bar caption buttons on Mica and maximize
+        run: go tool nsgo test -run '^(TestHiddenTitleBarNoSystemCaptionButtonsOnMaximize|TestHiddenTitleBarCaptionHitTestAndClientButtons)$' ./internal/platform/windows -- -count=1
       - name: Test Windows automation end to end
         env:
           NSGO_AUTOMATION_E2E: '1'

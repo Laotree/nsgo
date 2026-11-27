@@ -44,6 +44,7 @@ type view struct {
 	id      driver.NodeID
 	kind    driver.ViewKind
 	native  objc.ID
+	layer   objc.ID // cached backing layer of native
 	events  driver.EventMask
 	// contentLayer draws a text's or a canvas's content.
 	contentLayer objc.ID
@@ -93,7 +94,8 @@ type view struct {
 	gpu        *apple.GPULayer // a GPU view's (gpu.go)
 	container  objc.ID         // what holds its children under an effect or for its clip, once it has one
 	clipHeld   bool            // whether container clips the children in place of the view's own layer, which keeps its shadow and outline (clipsInHolder)
-	web        *apple.Web      // a web view's
+	holderFit  bool
+	web        *apple.Web // a web view's
 	pip        *apple.PictureInPicture
 	video      *apple.Video // a video's
 
@@ -128,6 +130,7 @@ type view struct {
 	// animated values and a layout animation draw over.
 	frame       driver.Bounds
 	framed      bool
+	layerGeom   apple.TransformGeometry
 	shift       driver.Point // a sticky cell's, from frame
 	style       driver.ViewStyle
 	animated    driver.AnimatedValues
@@ -975,6 +978,9 @@ func (s *surface) observe() {
 			if state == driver.LifecycleBackground {
 				s.wakePictureInPictures()
 			} else if name == "UIApplicationWillEnterForegroundNotification" {
+				for _, v := range s.pips {
+					v.pip.ResetBackgroundStop()
+				}
 				s.stopPictureInPictureTimer()
 				s.dirtyPictureInPictures()
 			}
@@ -1368,6 +1374,12 @@ func (s *surface) apply(b *driver.MountBatch) {
 		case driver.ItemPickDirectories:
 			s.pickDirectories(*it.Directories, it.Count)
 			continue
+		case driver.ItemOpenDirectory:
+			apple.HandleOpenDirectory(it.Value, it.Count, false, s.engine.Dispatch)
+			continue
+		case driver.ItemReleaseDirectory:
+			apple.HandleReleaseDirectory(it.Value, it.Count, s.engine.Dispatch)
+			continue
 		case driver.ItemOpenFile:
 			s.openFile(*it.Open, it.Count)
 			continue
@@ -1578,6 +1590,7 @@ func (s *surface) apply(b *driver.MountBatch) {
 		case driver.ItemPictureInPicture:
 			if v.pip == nil {
 				v.pip = apple.NewPictureInPicture(0, v.report)
+				v.pip.OnWake = s.wakePictureInPictures
 				s.pips = append(s.pips, v)
 				if layer := v.pip.Layer(); layer != 0 {
 					// AVKit needs an inline source attached to a window. The content
@@ -1727,7 +1740,7 @@ func (s *surface) apply(b *driver.MountBatch) {
 		case driver.ItemFocus:
 			if v.input != nil {
 				v.input.field.Send(selBecomeFirst)
-			} else if v.focusable() {
+			} else if v.canTakeTVFocus() {
 				s.focusView(v)
 			}
 		case driver.ItemBlur:
@@ -1869,6 +1882,7 @@ func (s *surface) delete(v *view, kept bool) {
 	delete(s.ownTexts, v.id)
 	if v.sc != nil {
 		v.releaseHandle()
+		releaseTVScroll(v)
 		for i := range v.sc.edges {
 			if ev := &v.sc.edges[i]; ev.holder != 0 {
 				ev.paint.Release()
@@ -1920,8 +1934,9 @@ func (s *surface) delete(v *view, kept bool) {
 	if v.accessory != 0 {
 		s.setAccessory(v, 0)
 	}
-	apple.ForgetTransform(v.native.Send(selLayer))
-	apple.ForgetDecor(v.native.Send(selLayer))
+	layer := objc.ID(apple.Msg(v.native, selLayer))
+	apple.ForgetTransform(layer)
+	apple.ForgetDecor(layer)
 	v.forgetContent()
 	forgetGate(v.pan)
 	v.layout.Release()

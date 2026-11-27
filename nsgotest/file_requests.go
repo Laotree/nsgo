@@ -53,27 +53,29 @@ func filePick(r driver.FilesRequest) FilePick {
 
 // DirectoryPick records the app's options for picking directories.
 type DirectoryPick struct {
-	Limit  int
-	Title  string
-	Button string
-	Start  string
+	Limit   int
+	Title   string
+	Button  string
+	Start   string
+	Persist bool
 }
 
 func directoryPick(r driver.DirectoriesRequest) DirectoryPick {
-	return DirectoryPick{Limit: r.Limit, Title: r.Title, Button: r.Button, Start: r.Start}
+	return DirectoryPick{Limit: r.Limit, Title: r.Title, Button: r.Button, Start: r.Start, Persist: r.Persist}
 }
 
 // FileSave records the app's suggested file name and what it wants to
 // save, from the file at Path when given or from Data.
 type FileSave struct {
-	Name string
-	MIME string
-	Path string
-	Data []byte
+	Name  string
+	MIME  string
+	Start string
+	Path  string
+	Data  []byte
 	// Preflight asks the platform to confirm the destination before writing.
 	Preflight bool
 }
 
 func fileSave(r driver.SaveRequest) FileSave {
-	return FileSave{Name: r.Name, MIME: r.MIME, Path: r.Path, Data: slices.Clone(r.Data), Preflight: r.Preflight}
+	return FileSave{Name: r.Name, MIME: r.MIME, Start: r.Start, Path: r.Path, Data: slices.Clone(r.Data), Preflight: r.Preflight}
 }

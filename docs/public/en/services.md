@@ -120,11 +120,15 @@ cx.PickImages(core.PickOptions{Limit: 1, MaxDimension: 2048}, func(files []core.
 
 `cx.PickFiles` picks files of any type, `cx.PickDirectories` picks folders as an `fs.FS`, and `cx.SaveFile` saves a file or bytes through the system's save dialog. Both pickers take a `Title`, a `Button` label and a `Start` folder, and `PickFilesOptions.TypesName` names the type menu, so an app can show them in its own language; these are hints, which macOS, Windows and Linux follow, iOS only for `Start`, and Android and the web not at all. `cx.PickScreenColor` picks a color anywhere on the screen where `cx.Env().CanPickScreenColor()` is true: macOS, Windows, Linux with the desktop Screenshot portal, and browsers with `EyeDropper`.
 
+Set `core.PickDirectoriesOptions.Persist` to keep read access to a picked folder across app restarts: each returned `core.Directory` carries an opaque serializable `Token` on Android (a persisted SAF tree permission), iOS and macOS (a security-scoped bookmark), and Windows and Linux (the folder's path). Save that token (for example in `cx.Storage()`) and call `cx.OpenDirectory(token, done)` on a later launch to reopen the folder — persisting `dir.Token` again if the platform refreshed a stale bookmark — and `cx.ReleaseDirectory(token, done)` when the user removes the folder so persisted grants and security scopes are freed. Platforms without persistent folder grants (such as the web) leave `Token` empty and answer `OpenDirectory` and `ReleaseDirectory` with `core.CodeUnavailable`.
+
+Call `dir.MediaURI(name)` to get a read-only URI for a file inside a `core.Directory` that `core.Video` can stream directly without copying it into app storage: a `content://` document URI on Android, or a `file://` URL on macOS, iOS, Windows and Linux. Directories without a direct playback URI (such as on the web) return `core.ErrNoMediaURI`. For pathless directories (Android), call `MediaURI` off the engine's goroutine as you do `Open` and `ReadDir`.
+
 Set `core.SaveOptions.Start` to an existing absolute folder to open the save dialog there on macOS, Windows, Linux and iOS. With an empty or unusable hint, or on other targets, the system chooses the folder.
 
 Set `core.SaveOptions.Accept` to validate the chosen destination before writing. It runs on the engine's goroutine. Returning an error leaves the destination untouched. On macOS, Windows and in the in-process GTK chooser on Linux, the dialog shows the reason and lets the user choose another path. Cancelling after a refusal reports `saved == false`, the refused path and the error. On Android and in the Linux desktop portal, a refusal completes the save with that result. Android lets the user choose a folder and supplies a tree URI with the requested file name as its `name` query parameter. It creates the document after approval and reports the new document's URI on success. The platform abandons the write if the check does not answer within five seconds. iOS and HarmonyOS report an error for saves requiring a check. The web has no destination path and uses its ordinary save flow.
 
-In headless tests, `App.PickFiles`, `App.PickDirectories` and `App.SaveFile` receive `nsgotest.FilePick`, `nsgotest.DirectoryPick` and `nsgotest.FileSave` records. The same records are in `app.FilePicks`, `app.DirectoryPicks` and `app.Saves`.
+In headless tests, `App.PickFiles`, `App.PickDirectories` and `App.SaveFile` receive `nsgotest.FilePick`, `nsgotest.DirectoryPick` and `nsgotest.FileSave` records. The same records are in `app.FilePicks`, `app.DirectoryPicks` and `app.Saves`. Persisted picks are stored in `app.PersistedDirectories`, answered by `app.OpenDirectory` and cleared by `app.ReleaseDirectory` (recording tokens in `app.ReleasedDirectories`).
 
 ### Bundled assets
 
@@ -611,7 +615,7 @@ Mini programs use `cx.SignInMiniProgram(core.MiniProgramSignInOptions{}, done)` 
 
 `cx.Env().CanSignInMiniProgram()` reports the host API's availability. Other targets answer `core.MiniProgramSignInUnavailable`; code without `core.AccessMiniProgramSignIn` gets `AccessDenied`. Douyin asks silently by default: an unsigned host returns `MiniProgramSignInNotSignedIn`, and `MiniProgramSignInOptions{Prompt: true}` permits its host-account login window. Closing that window returns `MiniProgramSignInCancelled`. An anonymous device code never counts as a signed-in user. Tests set `nsgotest.Environment(core.Environment{MiniProgramSignIn: true})` and `app.MiniProgramSignIn`; `app.MiniProgramSignIns` records requests. TSX does not run in mini programs.
 
-An app whose web views should be signed in as the user already is elsewhere, such as in their own browser, writes the cookies of that sign-in with `cx.SetWebCookies`, HttpOnly ones included, which page scripts cannot set, then loads the pages: done runs once the store holds them. The store is the persistent one every web view of the app shares, so cookies with an `Expires` outlive the app; Incognito views do not see them, except on Android, which keeps one store per app. HarmonyOS, the web, tvOS and watchOS answer `Unavailable`.
+An app whose web views should be signed in as the user already is elsewhere, such as in their own browser, writes the cookies of that sign-in with `cx.SetWebCookies`, HttpOnly ones included, which page scripts cannot set, then loads the pages: done runs once the store holds them. The store is the persistent one every web view of the app shares, so cookies with an `Expires` outlive the app; Incognito views do not see them, except on Android, which keeps one store per app. On Linux, libsoup refuses cookies whose domain is on the Public Suffix List (including its private section), failing the call before any cookie is written. HarmonyOS, the web, tvOS and watchOS answer `Unavailable`.
 
 ```go
 cx.SetWebCookies([]core.WebCookie{
@@ -675,7 +679,7 @@ apple:
 
 Show the prices the store gives, `DisplayPrice`, never prices of the app's own: the store prices each storefront itself. A purchase answers once, with the transaction or an error: `core.PurchaseCancelled` when the user closes the sheet, `core.PurchasePending` while it waits for approval, as Ask to Buy does, and otherwise `core.PurchaseFailed`, with the store's words, or `PurchasesUnavailable` elsewhere. Send the transaction's `Signed`, the store's JWS, to the app's server to verify, deliver what it bought, then finish it; the store hands an unfinished transaction to the app again at every launch.
 
-`cx.ManageSubscriptions` opens Apple's subscription management UI (the system sheet on iOS, the App Store subscriptions page on macOS and tvOS). `cx.RequestRefund` starts a refund request for a transaction and answers `core.RefundSuccess` or `core.RefundCancelled`.
+`cx.ManageSubscriptions` opens Apple's subscription management UI (the system sheet on iOS, the App Store subscriptions page on macOS and tvOS). `cx.RequestRefund` starts a refund request for a transaction on iOS and macOS and answers `core.RefundSuccess` or `core.RefundCancelled` (tvOS answers `core.PurchaseFailed`).
 
 ```go
 cx.OnPurchaseUpdate(func(t core.Transaction) { // renewals, approved purchases, other devices', refunds, and unfinished ones at launch
@@ -701,7 +705,7 @@ cx.Purchase("com.example.pro.monthly", core.PurchaseOptions{AccountToken: userUU
 
 `FinishTransaction` returns `PurchaseNotFound` for an already finished transaction, including one returned by `CurrentEntitlements`; a finished non-consumable remains owned.
 
-Register `OnPurchaseUpdate` as the app starts: updates that come before any handler wait for the first. `cx.CurrentEntitlements` answers what the user owns now, to unlock it at launch, and a Restore Purchases button calls `cx.SyncPurchases`, which may ask the user to sign in. `AccountToken` is a UUID of the app's own that the transaction and the App Store's server notifications carry. macOS sells only in a Mac App Store build, and an App Clip sells nothing; Android, watchOS, Windows, Linux, the web and mini programs answer `PurchasesUnavailable` for now. Test purchases with `nsgotest`, whose `Products`, `PurchaseAnswer`, `UpdatePurchase` and `UnfinishedTransactions` stand in for the store. `app.PurchaseRequests` records store operations as `nsgotest.PurchaseRequest` values. In TSX, the `Purchases` module needs the `purchases` capability: `purchase` resolves with `{ status: "purchased", transaction }`, `"pending"` or `"cancelled"`, and `on("update", listener)` hears updates.
+Register `OnPurchaseUpdate` as the app starts: updates that come before any handler wait for the first. `cx.CurrentEntitlements` answers what the user owns now, to unlock it at launch, and a Restore Purchases button calls `cx.SyncPurchases`, which may ask the user to sign in. `AccountToken` is a UUID of the app's own that the transaction and the App Store's server notifications carry. macOS sells only in a Mac App Store build, and an App Clip sells nothing; Android, watchOS, Windows, Linux, the web and mini programs answer `PurchasesUnavailable` for now. Test purchases with `nsgotest`, whose `Products`, `PurchaseAnswer`, `ManageSubscriptionsError`, `RefundStatus`, `RefundError`, `UpdatePurchase` and `UnfinishedTransactions` stand in for the store. `app.PurchaseRequests` records store operations as `nsgotest.PurchaseRequest` values. In TSX, the `Purchases` module needs the `purchases` capability: `purchase` resolves with `{ status: "purchased", transaction }`, `"pending"` or `"cancelled"`, `manageSubscriptions()` opens subscription management, `requestRefund(transactionId)` resolves with `"success"` or `"cancelled"`, and `on("update", listener)` hears updates.
 
 ## Interface orientation
 
@@ -863,7 +867,17 @@ if cx.Env().CanUseGameServices() {
 }
 ```
 
-`gameservices.ReportAchievement` clamps progress to `0..100` (`100` unlocks the achievement). `gameservices.LoadScores` reads ranked `gameservices.ScoreEntry` rows for `Global` or `Friends` over `AllTime`, `Week` or `Today`, and `gameservices.ShowAchievements` and `gameservices.ShowLeaderboard` open the platform's native overlays. macOS, iOS and tvOS reach GameKit via purego; Android will reach Play Games Services through a Java runtime hook that is not in the runtime yet, so it reports `CanUseGameServices() == false` for now; Windows, Linux, the web, watchOS and mini programs report `CanUseGameServices() == false` and answer `gameservices.ErrUnsupported`.
+`gameservices.ReportAchievement` clamps progress to `0..100` (`100` unlocks the achievement). `gameservices.LoadScores` reads ranked `gameservices.ScoreEntry` rows for `Global` or `Friends` over `AllTime`, `Week` or `Today`, and `gameservices.ShowAchievements` and `gameservices.ShowLeaderboard` open the platform's native overlays. macOS, iOS and tvOS reach GameKit via purego; Android reaches Google Play Games Services v2 via reflection when `com.google.android.gms:play-services-games-v2` is packaged in the app (setting `CanUseGameServices() == true`, with partial achievement progress using incremental 100-step achievements and `LoadScores` capped at Play Games' 25-row page size), and reports `CanUseGameServices() == false` with `gameservices.ErrUnavailable` when the SDK is absent; Windows, Linux, the web, watchOS and mini programs report `CanUseGameServices() == false` and answer `gameservices.ErrUnsupported`.
+
+On Android, add `com.google.android.gms:play-services-games-v2` to the app or Gradle host and declare the Play Games project ID in `AndroidManifest.xml`:
+
+```xml
+<meta-data
+    android:name="com.google.android.gms.games.APP_ID"
+    android:value="@string/game_services_project_id" />
+```
+
+If code shrinking is enabled, keep `com.google.android.gms.games.**` and `com.google.android.gms.tasks.**` so reflection reaches the Play Games Services v2 clients.
 
 In tests, enable game services with `nsgotest.Environment(core.Environment{CanUseGameServices: true})` and drive each app's isolated fake with `App.SetGameServicesPlayer`, `App.SetGameServicesFriends`, `App.SeedLeaderboardScores`, `App.SetGameServicesError`, `App.GameServicesAchievements`, `App.GameServicesScores`, `App.GameServicesShownAchievements` and `App.GameServicesShownLeaderboards`.
 

@@ -120,12 +120,15 @@ cx.PickImages(core.PickOptions{Limit: 1, MaxDimension: 2048}, func(files []core.
 
 `cx.PickFiles` 选择任意类型的文件，`cx.PickDirectories` 把文件夹选成 `fs.FS`，`cx.SaveFile` 通过系统保存对话框保存文件或字节。两种选择器都可以设置 `Title`（标题）、`Button`（按钮文字）和 `Start`（起始文件夹），`PickFilesOptions.TypesName` 还能命名类型菜单，便于用应用自己的语言显示；这些只是提示，macOS、Windows 和 Linux 会遵循，iOS 只支持 `Start`，Android 和 Web 都会忽略。`cx.PickScreenColor` 在 `cx.Env().CanPickScreenColor()` 为真时从屏幕任意位置取色：macOS、Windows、提供桌面 Screenshot portal 的 Linux，以及支持 `EyeDropper` 的浏览器。
 
+设置 `core.PickDirectoriesOptions.Persist` 可在支持持久化目录授权的平台上跨应用重启保留只读访问：返回的每个 `core.Directory` 会携带可序列化的不透明令牌 `Token`（Android 上为持久化 SAF 目录树权限，iOS 和 macOS 上为安全作用域书签，Windows 和 Linux 上为文件夹路径）。将该令牌保存（如存入 `cx.Storage()`），下次启动时用 `cx.OpenDirectory(token, done)` 重新打开目录——如果平台刷新了过期的书签，应保存返回的新 `dir.Token`——用户移除目录时调用 `cx.ReleaseDirectory(token, done)` 释放持久化授权与安全作用域。不支持持久化授权的平台（如 Web）会将 `Token` 留空，并对 `OpenDirectory` 和 `ReleaseDirectory` 返回 `core.CodeUnavailable`。
+
+调用 `dir.MediaURI(name)` 可获取 `core.Directory` 中某个文件的只读 URI，供 `core.Video` 就地流式播放而无需复制到应用存储：Android 上返回 `content://` 文档 URI，macOS、iOS、Windows 和 Linux 上返回 `file://` URL；无法提供直接播放 URI 的目录（如 Web）返回 `core.ErrNoMediaURI`。对无路径目录（Android），应与 `Open`、`ReadDir` 一样在引擎 goroutine 之外调用 `MediaURI`。
 
 在 macOS、Windows、Linux 和 iOS 上，将 `core.SaveOptions.Start` 设为现有文件夹的绝对路径，保存对话框就会从该文件夹打开。路径为空、不可用或在其他平台上时，由系统选择起始文件夹。
 
 设置 `core.SaveOptions.Accept` 可以在写入前校验用户选定的目标。回调在引擎的 goroutine 上运行。返回错误时，所选目标保持原样。macOS、Windows 和 Linux 上进程内的 GTK 对话框会显示拒绝原因，并允许用户选择其他路径。如果用户在拒绝后取消，保存回调会收到 `saved == false`、被拒绝的路径和原始错误。在 Android 和 Linux 桌面门户中，拒绝时保存回调直接收到上述结果。Android 让用户选择文件夹，传给校验回调的是树 URI，其中 `name` 查询参数为应用请求的文件名。校验通过后才创建文件，成功时返回新文档的 URI。校验超过五秒未答复，平台会放弃写入。iOS 和 HarmonyOS 对要求校验的保存返回错误。Web 没有目标路径，沿用其常规保存流程。
 
-在无头测试中，`App.PickFiles`、`App.PickDirectories` 和 `App.SaveFile` 分别接收 `nsgotest.FilePick`、`nsgotest.DirectoryPick` 和 `nsgotest.FileSave` 记录。`app.FilePicks`、`app.DirectoryPicks` 和 `app.Saves` 保存这些记录。
+在无头测试中，`App.PickFiles`、`App.PickDirectories` 和 `App.SaveFile` 分别接收 `nsgotest.FilePick`、`nsgotest.DirectoryPick` 和 `nsgotest.FileSave` 记录。`app.FilePicks`、`app.DirectoryPicks` 和 `app.Saves` 保存这些记录。持久化选择会自动保存在 `app.PersistedDirectories` 中，由 `app.OpenDirectory` 处理打开，由 `app.ReleaseDirectory` 清理并在 `app.ReleasedDirectories` 中记录已释放的令牌。
 
 ## 拉取式 PCM 音频
 
@@ -513,7 +516,7 @@ cx.AuthSession(func(redirect string) string {
 
 授权 URL 函数应原样使用收到的重定向地址。Web 和桌面回环重定向会先编码 Unicode 路径并解析点路径段，再把地址交给该函数；回环 `Path` 是未编码文本，所以字面上的 `%` 也会被转义。
 
-应用的 web view 要以用户在别处（例如自己的浏览器里）已有的登录状态打开页面时，用 `cx.SetWebCookies` 写入这次登录的 Cookie，包括页面脚本写不了的 HttpOnly Cookie，再加载页面：存储收下它们后 done 才会运行。写入的是应用所有 web view 共用的持久存储，带 `Expires` 的 Cookie 在应用退出后仍然保留；无痕（Incognito）web view 看不到它们，但 Android 每个应用只有一个存储，那里也看得到。HarmonyOS、Web、tvOS 和 watchOS 回答 `Unavailable`。
+应用的 web view 要以用户在别处（例如自己的浏览器里）已有的登录状态打开页面时，用 `cx.SetWebCookies` 写入这次登录的 Cookie，包括页面脚本写不了的 HttpOnly Cookie，再加载页面：存储收下它们后 done 才会运行。写入的是应用所有 web view 共用的持久存储，带 `Expires` 的 Cookie 在应用退出后仍然保留；无痕（Incognito）web view 看不到它们，但 Android 每个应用只有一个存储，那里也看得到。在 Linux 上，libsoup 会拒绝属于公共后缀列表（包括其私有部分）的域名，并在写入任何 Cookie 前使本次调用失败。HarmonyOS、Web、tvOS 和 watchOS 回答 `Unavailable`。
 
 ```go
 cx.SetWebCookies([]core.WebCookie{
@@ -579,7 +582,7 @@ apple:
 
 显示商店给出的价格 `DisplayPrice`，不要显示应用自己定的价格：商店按各地区自行定价。一次购买只回答一次，给出交易或错误：用户关闭面板时是 `core.PurchaseCancelled`，等待批准（如「询问购买」）时是 `core.PurchasePending`，其余是附带商店原话的 `core.PurchaseFailed`，其他平台上是 `PurchasesUnavailable`。把交易的 `Signed`（商店签名的 JWS）交给应用的服务器验证，交付所购内容，再完成这笔交易；未完成的交易每次启动时商店都会再次交给应用。
 
-`cx.ManageSubscriptions` 打开 Apple 的订阅管理界面（iOS 为系统面板，macOS 和 tvOS 为 App Store 订阅页面）。`cx.RequestRefund` 为交易发起退款请求，并回答 `core.RefundSuccess` 或 `core.RefundCancelled`。
+`cx.ManageSubscriptions` 打开 Apple 的订阅管理界面（iOS 为系统面板，macOS 和 tvOS 为 App Store 订阅页面）。`cx.RequestRefund` 在 iOS 和 macOS 上为交易发起退款请求，并回答 `core.RefundSuccess` 或 `core.RefundCancelled`（tvOS 回答 `core.PurchaseFailed`）。
 
 ```go
 cx.OnPurchaseUpdate(func(t core.Transaction) { // 续订、获批的购买、其他设备上的购买、退款，以及启动时未完成的交易
@@ -605,7 +608,7 @@ cx.Purchase("com.example.pro.monthly", core.PurchaseOptions{AccountToken: userUU
 
 `FinishTransaction` 对已完成的交易返回 `PurchaseNotFound`，即使它仍由 `CurrentEntitlements` 返回；已完成的非消耗型商品仍归用户所有。
 
-在应用启动时注册 `OnPurchaseUpdate`：在任何处理函数之前到达的更新会留给第一个注册的。`cx.CurrentEntitlements` 回答用户当前拥有的内容，供启动时解锁；「恢复购买」按钮调用 `cx.SyncPurchases`，它可能要求用户登录。`AccountToken` 是应用自己的 UUID，交易和 App Store 发给服务器的通知都会带上它。macOS 只有 Mac App Store 构建能销售，App Clip 不销售任何东西；Android、watchOS、Windows、Linux、Web 和小程序目前回答 `PurchasesUnavailable`。用 `nsgotest` 测试购买，它的 `Products`、`PurchaseAnswer`、`UpdatePurchase` 和 `UnfinishedTransactions` 代替商店。`app.PurchaseRequests` 以 `nsgotest.PurchaseRequest` 记录商店操作。在 TSX 中，`Purchases` 模块需要 `purchases` 能力：`purchase` 解析为 `{ status: "purchased", transaction }`、`"pending"` 或 `"cancelled"`，`on("update", listener)` 接收更新。
+在应用启动时注册 `OnPurchaseUpdate`：在任何处理函数之前到达的更新会留给第一个注册的。`cx.CurrentEntitlements` 回答用户当前拥有的内容，供启动时解锁；「恢复购买」按钮调用 `cx.SyncPurchases`，它可能要求用户登录。`AccountToken` 是应用自己的 UUID，交易和 App Store 发给服务器的通知都会带上它。macOS 只有 Mac App Store 构建能销售，App Clip 不销售任何东西；Android、watchOS、Windows、Linux、Web 和小程序目前回答 `PurchasesUnavailable`。用 `nsgotest` 测试购买，它的 `Products`、`PurchaseAnswer`、`ManageSubscriptionsError`、`RefundStatus`、`RefundError`、`UpdatePurchase` 和 `UnfinishedTransactions` 代替商店。`app.PurchaseRequests` 以 `nsgotest.PurchaseRequest` 记录商店操作。在 TSX 中，`Purchases` 模块需要 `purchases` 能力：`purchase` 解析为 `{ status: "purchased", transaction }`、`"pending"` 或 `"cancelled"`，`manageSubscriptions()` 打开订阅管理，`requestRefund(transactionId)` 解析为 `"success"` 或 `"cancelled"`，`on("update", listener)` 接收更新。
 
 ## 指针锁定
 
@@ -712,6 +715,36 @@ mobile.RequestOverlayPermission(cx, func(p core.OverlayPermission) {
 ## 音频时序
 
 用 `audio.Now(cx)` 读取预约播放的时钟。`audio.CanSchedule(cx)` 为 true 时，可将 `audio.Voice.StartAt` 设置为将来的时刻。调用 `audio.OutputLatency(cx, func(latency time.Duration, known bool) { ... })` 可读取当前音频输出路径的延迟。macOS、iOS、Linux 和 Web 支持预约播放；在 Windows 和 Android 上 `CanSchedule` 为 false，设置了 `StartAt` 的声音会立即播放。回调中的 `known` 表示当前路径是否报告了延迟，Windows 和 Android 不报告延迟。
+
+## 游戏服务
+
+`gameservices` 包在 `cx.Env().CanUseGameServices()` 为 true 的平台上提供与服务商无关的接口，用于玩家登录、成就、排行榜以及原生的 Game Center / Play Games 界面。所有回调都在引擎 goroutine 上执行，可直接更新信号而不阻塞渲染帧。
+
+```go
+if cx.Env().CanUseGameServices() {
+	gameservices.Authenticate(cx, func(p gameservices.Player, err error) {
+		if err == nil && p.Authenticated {
+			playerName.Set(p.DisplayName)
+			gameservices.ReportAchievement(cx, "first-run", 100, nil)
+			gameservices.SubmitScore(cx, "high-scores", 1250, nil)
+		}
+	})
+}
+```
+
+`gameservices.ReportAchievement` 将进度限制在 `0..100`（`100` 解锁成就）。`gameservices.LoadScores` 按 `Global` 或 `Friends` 以及 `AllTime`、`Week` 或 `Today` 读取带排名的 `gameservices.ScoreEntry` 列表，`gameservices.ShowAchievements` 和 `gameservices.ShowLeaderboard` 打开平台原生界面。macOS、iOS 和 tvOS 通过 purego 调用 GameKit；Android 在应用打包了 `com.google.android.gms:play-services-games-v2` 时通过反射调用 Google Play Games Services v2（此时 `CanUseGameServices()` 为 true，部分进度对应 Play Console 中配置的 100 步增量成就，`LoadScores` 受限于 Play Games 每页最多 25 条），缺少该 SDK 时报告 `CanUseGameServices() == false` 并返回 `gameservices.ErrUnavailable`；Windows、Linux、Web、watchOS 和小程序报告 `CanUseGameServices() == false` 并返回 `gameservices.ErrUnsupported`。
+
+在 Android 上，请在应用或 Gradle 宿主中加入 `com.google.android.gms:play-services-games-v2` 依赖，并在 `AndroidManifest.xml` 中声明 Play Games 项目 ID：
+
+```xml
+<meta-data
+    android:name="com.google.android.gms.games.APP_ID"
+    android:value="@string/game_services_project_id" />
+```
+
+若启用了代码压缩，请保留 `com.google.android.gms.games.**` 和 `com.google.android.gms.tasks.**`，以便反射找到 Play Games Services v2 客户端。
+
+测试时，用 `nsgotest.Environment(core.Environment{CanUseGameServices: true})` 开启游戏服务，并用 `App.SetGameServicesPlayer`、`App.SetGameServicesFriends`、`App.SeedLeaderboardScores`、`App.SetGameServicesError`、`App.GameServicesAchievements`、`App.GameServicesScores`、`App.GameServicesShownAchievements` 和 `App.GameServicesShownLeaderboards` 驱动每个应用隔离的测试替身。
 
 ## 下一步
 
