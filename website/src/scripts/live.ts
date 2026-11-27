@@ -3,6 +3,7 @@
 // app's wasm is fetched, decompressed and compiled once a page, and each
 // box runs a Go program of its own, in the site's appearance and the
 // page's language. scripts/build-live.mjs bundles it as public/live/boxes.js.
+import { ZSTDDecoder } from 'zstddec';
 
 /** The appearance Starlight shows, which its theme menu sets on the root. */
 const currentTheme = () => (document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
@@ -10,7 +11,10 @@ const currentTheme = () => (document.documentElement.dataset.theme === 'light' ?
 interface Config {
   exec: string;
   loader: string;
-  gzip: string;
+  codec: string;
+  stream: string;
+  streamSize: number;
+  wasmSize: number;
   resources?: Record<string, string>;
 }
 
@@ -37,14 +41,17 @@ function load(dir: string): Promise<App> {
     app = (async () => {
       const url = new URL('nsgo.json', new URL(dir, location.href)).href;
       const config = (await (await fetch(url)).json()) as Config;
-      const response = await fetch(new URL(config.gzip, url));
-      if (!response.ok) throw new Error(`${config.gzip}: ${response.status}`);
-      let bytes = await response.arrayBuffer();
+      const response = await fetch(new URL(config.stream, url));
+      if (!response.ok) throw new Error(`${config.stream}: ${response.status}`);
+      let bytes = new Uint8Array(await response.arrayBuffer());
       // A host may already have decoded it; decompress only while the
-      // gzip magic is there.
-      const head = new Uint8Array(bytes, 0, 2);
-      if (head[0] === 0x1f && head[1] === 0x8b) {
-        bytes = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+      // zstd frame magic is there.
+      if (bytes[0] === 0x28 && bytes[1] === 0xb5 && bytes[2] === 0x2f && bytes[3] === 0xfd) {
+        const decoder = new ZSTDDecoder();
+        await decoder.init();
+        // zstddec types its output as ArrayBufferLike, which the DOM lib
+        // does not accept where an ArrayBuffer is required.
+        bytes = decoder.decode(bytes, config.wasmSize) as Uint8Array<ArrayBuffer>;
       }
       const [module, loader] = await Promise.all([
         WebAssembly.compile(bytes),

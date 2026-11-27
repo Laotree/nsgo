@@ -149,7 +149,9 @@
     </div>
 
     <script src="__EXEC__"></script>
-    <script>
+    <script type="module">
+      import { ZSTDDecoder } from '../zstddec.mjs';
+
       (function () {
         'use strict';
 
@@ -270,13 +272,19 @@
           return pump();
         }
 
-        function decompress(buffer) {
-          var head = new Uint8Array(buffer, 0, Math.min(2, buffer.byteLength));
+        var decoder;
+
+        function decompress(buffer, wasmSize) {
+          var head = new Uint8Array(buffer, 0, Math.min(4, buffer.byteLength));
           // A host may already have decoded the file. Decompress only when
-          // the gzip magic is still there.
-          if (head[0] !== 0x1f || head[1] !== 0x8b) return Promise.resolve(buffer);
-          var stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'));
-          return new Response(stream).arrayBuffer();
+          // the zstd frame magic is still there.
+          if (head[0] !== 0x28 || head[1] !== 0xb5 || head[2] !== 0x2f || head[3] !== 0xfd) {
+            return Promise.resolve(new Uint8Array(buffer));
+          }
+          decoder = decoder || new ZSTDDecoder();
+          return decoder.init().then(function () {
+            return decoder.decode(new Uint8Array(buffer), wasmSize);
+          });
         }
 
         function waitUntilMounted() {
@@ -301,14 +309,12 @@
         }
 
         function start() {
-          var url = '__GZIP__';
-          var expected = __GZIP_SIZE__;
+          var url = '__STREAM__';
+          var expected = __STREAM_SIZE__;
+          var wasmSize = __WASM_SIZE__;
 
           if (typeof WebAssembly === 'undefined' || typeof Go === 'undefined') {
             return Promise.reject(new Error('This browser cannot run WebAssembly.'));
-          }
-          if (typeof DecompressionStream === 'undefined') {
-            return Promise.reject(new Error('This browser cannot decompress the engine.'));
           }
 
           setProgress('prepare', 2, 0, expected, 'Preparing WebAssembly…');
@@ -332,7 +338,7 @@
             })
             .then(function (download) {
               setProgress('decompress', 67, download.total, download.total, 'Decompressing the engine…');
-              return decompress(download.buffer).then(function (raw) {
+              return decompress(download.buffer, wasmSize).then(function (raw) {
                 setProgress(
                   'decompress',
                   77,

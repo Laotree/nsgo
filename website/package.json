@@ -8,6 +8,7 @@
     "preview": "astro preview",
     "gallery": "bun scripts/build-gallery.mjs",
     "live": "bun scripts/build-live.mjs",
+    "test": "bun test",
     "typecheck": "astro check",
     "screenshots": "bun scripts/screenshots.mjs",
     "share-cards": "nsgo-website-share-cards"
@@ -16,7 +17,8 @@
     "@astrojs/markdown-satteri": "^0.4.8",
     "astro": "^7.4.13",
     "mdast-util-from-markdown": "^2.1.0",
-    "nsgo-website": "github:nsgo-dev/nsgo-website"
+    "nsgo-website": "github:nsgo-dev/nsgo-website",
+    "zstddec": "0.3.4"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.12",

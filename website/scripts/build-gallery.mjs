@@ -6,8 +6,9 @@
 // leaves the other groups' demos out.
 //
 // public/gallery/ is generated: do not edit it.
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { buildWeb, website } from './web-build.mjs';
 
 const galleryDir = path.join(website, 'public', 'gallery');
@@ -50,14 +51,19 @@ for (const group of groups) {
     path.join(galleryDir, group.id, 'app.html'),
     readFileSync(path.join(website, 'scripts', 'gallery-loader.html'), 'utf8')
       .replaceAll('__EXEC__', app.exec)
-      .replaceAll('__GZIP__', app.gzip)
+      .replaceAll('__STREAM__', app.stream)
       .replaceAll('__RESOURCES__', JSON.stringify(app.resources ?? {}))
-      .replaceAll('__GZIP_SIZE__', String(app.gzipSize))
+      .replaceAll('__STREAM_SIZE__', String(app.streamSize))
+      .replaceAll('__WASM_SIZE__', String(app.wasmSize))
       .replaceAll('__ICON__', icon),
   );
   rmSync(path.join(galleryDir, group.id, 'index.html'));
-  index.groups.push({ id: group.id, title: group.title, gzip: app.gzip, gzipSize: app.gzipSize });
+  index.groups.push({ id: group.id, title: group.title, stream: app.stream, streamSize: app.streamSize });
 }
+
+// The group pages import one decoder from the gallery's root, so a
+// visitor fetches it once.
+copyFileSync(fileURLToPath(import.meta.resolve('zstddec')), path.join(galleryDir, 'zstddec.mjs'));
 
 const frame = readFileSync(path.join(website, 'scripts', 'gallery-frame.html'), 'utf8')
   .replaceAll('__ICON__', `${groups[0].id}/${icon}`)
