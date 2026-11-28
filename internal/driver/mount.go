@@ -166,7 +166,8 @@ const (
 	// ViewProps were sent before, and nothing else: a label following app
 	// state changes alone, so the rest is not sent again.
 	ItemAccessibilityLabel
-	// ItemAccessibilityFocus moves the screen reader's focus to ID.
+	// ItemAccessibilityFocus moves the screen reader's focus to ID, or to
+	// the CanvasNode whose ID matches Value when Value is non-empty.
 	ItemAccessibilityFocus
 	// ItemScreen configures a screen's system header (Screen) on the
 	// platforms that report header heights, before the screen is
@@ -427,6 +428,8 @@ const (
 	// Value (Directory.Token). EventFiles answers Count with Text empty on
 	// success or the reason for failure.
 	ItemReleaseDirectory
+	// ItemRenderDrawing plays RenderDrawing into an offscreen bitmap. EventFiles answers Count with *image.RGBA in Data.
+	ItemRenderDrawing
 )
 
 // EditAction is an editing action of an input's touch edit menu (ItemEditMenu, EventEditAction).
@@ -500,6 +503,7 @@ const (
 	BiometricNone = iota
 	BiometricFace
 	BiometricFingerprint
+	BiometricWindowsHello
 )
 
 // Biometric results, as reported by an authentication request.
@@ -694,6 +698,8 @@ type MountItem struct {
 	OffscreenID uint64
 	// Bytes is ItemImageCacheLimit's memory budget in bytes.
 	Bytes int64
+	// RenderDrawing is ItemRenderDrawing's request.
+	RenderDrawing *RenderDrawingRequest
 }
 
 // QuickLookRequest is an ItemQuickLook's files, regular files the core checked, and the index of the one shown first, within them.
@@ -971,6 +977,22 @@ type ScreenConfig struct {
 	Animation ScreenAnimation
 }
 
+// Equal reports whether a and b describe the same screen header configuration.
+func (a ScreenConfig) Equal(b ScreenConfig) bool {
+	return a.Title == b.Title && a.HeaderHidden == b.HeaderHidden &&
+		a.HeaderTransparent == b.HeaderTransparent && a.LargeTitle == b.LargeTitle &&
+		a.TitleFont.Equal(b.TitleFont) && a.LargeTitleFont.Equal(b.LargeTitleFont) &&
+		a.RightWithLargeTitle == b.RightWithLargeTitle && a.CanGoBack == b.CanGoBack &&
+		a.BackHidden == b.BackHidden && a.BackTitle == b.BackTitle &&
+		a.OwnBackTitle == b.OwnBackTitle && a.NoPopOnSwipe == b.NoPopOnSwipe &&
+		a.NoPopOnBack == b.NoPopOnBack && a.Background == b.Background &&
+		a.TitleColor == b.TitleColor && a.TintColor == b.TintColor &&
+		a.Left == b.Left && a.Right == b.Right && a.TitleView == b.TitleView &&
+		a.TitleFills == b.TitleFills && a.Header == b.Header &&
+		a.RightSystemItem == b.RightSystemItem && a.RightSymbols == b.RightSymbols &&
+		a.HeaderHeight == b.HeaderHeight && a.Animation == b.Animation
+}
+
 // HeaderSystemItem is a button iOS draws in a navigation bar in UIKit's
 // own look, its symbol or label.
 type HeaderSystemItem uint8
@@ -1052,6 +1074,22 @@ type InputConfig struct {
 	HideIndicator bool
 	// PasteBehavior says whether a paste inserts its text.
 	PasteBehavior PasteBehavior
+}
+
+// Equal reports whether a and b describe the same input configuration.
+func (a InputConfig) Equal(b InputConfig) bool {
+	return a.Style.Equal(b.Style) && a.Placeholder == b.Placeholder &&
+		a.Masked == b.Masked && a.Readonly == b.Readonly && a.Disabled == b.Disabled &&
+		a.KeyboardType == b.KeyboardType && a.Content == b.Content &&
+		a.Padding == b.Padding && a.Accessory == b.Accessory &&
+		a.AccessoryID == b.AccessoryID && a.Multiline == b.Multiline &&
+		a.MaxLength == b.MaxLength && a.SubmitBehavior == b.SubmitBehavior &&
+		a.ReturnKey == b.ReturnKey && a.AutoCapitalize == b.AutoCapitalize &&
+		a.NoAutoCorrect == b.NoAutoCorrect && a.AutoComplete == b.AutoComplete &&
+		a.KeyboardAppearance == b.KeyboardAppearance && a.PlaceholderColor == b.PlaceholderColor &&
+		a.SelectionColor == b.SelectionColor && a.CaretColor == b.CaretColor &&
+		a.AccentColor == b.AccentColor && a.HideCaret == b.HideCaret &&
+		a.HideIndicator == b.HideIndicator && a.PasteBehavior == b.PasteBehavior
 }
 
 // KeyboardType picks a software keyboard.

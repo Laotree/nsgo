@@ -139,8 +139,17 @@ func writeDrawing(w *writer, d *driver.Drawing) {
 			w.str(op.Font.Family)
 			w.points(op.Font.Size)
 			w.u16(uint16(op.Font.Weight))
-			w.flags(op.Font.Italic)
+			variations := driver.FontAndroidVariationSettings(op.Font)
+			hasAxes := variations != ""
+			hasFeatures := len(op.Font.Features) > 0
+			w.flags(op.Font.Italic, hasAxes, hasFeatures)
 			w.byte(byte(op.Font.Variant))
+			if hasAxes {
+				w.str(variations)
+			}
+			if hasFeatures {
+				w.str(driver.FontAndroidFeatureSettings(op.Font))
+			}
 		case driver.DrawAtlas:
 			writeAtlas(w, d, op)
 		case driver.DrawImage:
@@ -199,9 +208,17 @@ func writeDrawing(w *writer, d *driver.Drawing) {
 	for _, n := range nodes {
 		w.bounds(n.Bounds)
 		w.byte(byte(n.Role))
+		w.str(n.ID)
 		w.str(n.Label)
+		w.str(n.Hint)
 		w.str(n.TestID)
-		w.flags(n.Selected)
+		w.floats(n.Value, n.Min, n.Max, n.Step)
+		w.str(n.ValueText)
+		w.flags(n.Selected, n.Disabled, n.Busy)
+		w.byte(byte(n.Expanded))
+		w.byte(byte(n.Checked))
+		w.byte(byte(n.Live))
+		w.byte(byte(n.EffectiveActions()))
 	}
 	// The resolution scale and whether its pixels stretch to the nearest.
 	w.float(float32(d.ResolutionScale()))

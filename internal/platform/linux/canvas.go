@@ -8,7 +8,6 @@ import (
 	"log"
 	"math"
 	"slices"
-	"strings"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -101,7 +100,7 @@ func bindCanvas(cairoLib, pangocairoLib uintptr) {
 	reg(&cairoPopGroup, cairoLib, "cairo_pop_group")
 	reg(&cairoImageSurfaceCreateFor, cairoLib, "cairo_image_surface_create_for_data")
 	reg(&pangoCairoLayoutPath, pangocairoLib, "pango_cairo_layout_path")
-	bindRaster(cairoLib)
+	bindRasterCairo(cairoLib)
 }
 
 // Cairo's operators of each CompositeOp.
@@ -133,15 +132,19 @@ type canvasState struct {
 // canvasPlayer replays a drawing into a Cairo context, as the web's 2D
 // context does.
 type canvasPlayer struct {
-	w       *window
-	v       *view
-	drawing *driver.Drawing
-	cr      uintptr
-	base    cairoMatrix // the canvas's own coordinates
-	size    rect
-	st      canvasState
-	stack   []canvasState
-	waited  bool
+	w                *window
+	v                *view
+	drawing          *driver.Drawing
+	cr               uintptr
+	base             cairoMatrix // the canvas's own coordinates
+	size             rect
+	scale            float64
+	textContext      uintptr
+	resolveImage     func(driver.ImageSource) *imageSlot
+	resolveOffscreen func(*driver.OffscreenCanvas) *offscreenEntry
+	st               canvasState
+	stack            []canvasState
+	waited           bool
 }
 
 // changedNatives hands components the animated props that changed.
@@ -480,9 +483,15 @@ func (p *canvasPlayer) shadowed(draw func(cr uintptr)) {
 		draw(p.cr)
 		return
 	}
-	scale := math.Max(float64(p.w.env.PixelRatio), 1)
-	if p.v != nil && p.v.canvas.raster != nil && p.v.canvas.raster.scale > 0 {
-		scale = p.v.canvas.raster.scale
+	scale := p.scale
+	if scale <= 0 {
+		scale = 1
+		if p.w != nil {
+			scale = math.Max(float64(p.w.env.PixelRatio), 1)
+		}
+		if p.v != nil && p.v.canvas.raster != nil && p.v.canvas.raster.scale > 0 {
+			scale = p.v.canvas.raster.scale
+		}
 	}
 	blur := float64(sh.R) / 2 * scale // the Gaussian's deviation
 	pad := math.Ceil(3 * blur)
@@ -564,7 +573,7 @@ func (p *canvasPlayer) text(op *driver.DrawOp) {
 		return
 	}
 	cr := p.cr
-	l := canvasLayout(cr, op.Text, op.Font)
+	l := p.textLayout(op.Text, op.Font)
 	defer gObjectUnref(l)
 	baseline := float64(pangoLayoutGetBaseline(l)) / pangoScale
 	x, y := float64(op.X+op.X1), float64(op.Y+op.Y1)-baseline
@@ -596,17 +605,24 @@ func (p *canvasPlayer) text(op *driver.DrawOp) {
 	})
 }
 
-// canvasLayout returns text in font as a Pango layout for cr.
-func canvasLayout(cr uintptr, text string, font driver.Font) uintptr {
+// textLayout returns text in font as a Pango layout for p.cr, using p.textContext
+// when set so windowless or off-main-thread renders never touch the default font map.
+func (p *canvasPlayer) textLayout(text string, font driver.Font) uintptr {
 	if font.Size == 0 {
 		font.Size = driver.DefaultFontSize
 	}
-	l := pangoCairoCreateLayout(cr)
+	var l uintptr
+	if p.textContext != 0 {
+		pangoCairoUpdateContext(p.cr, p.textContext)
+		l = pangoLayoutNew(p.textContext)
+	} else {
+		l = pangoCairoCreateLayout(p.cr)
+	}
 	desc := fontDescription(font, uiFontFamily())
 	defer pangoFontDescriptionFree(desc)
 	pangoLayoutSetFontDescription(l, desc)
 	// A description has no OpenType features; an attribute carries them.
-	if f := fontFeatures(font.Variant); f != "" {
+	if f := driver.FontPangoFeatures(font); f != "" {
 		attrs := pangoAttrListNew()
 		pangoAttrListInsert(attrs, pangoAttrFontFeaturesNew(cstr(f)))
 		pangoLayoutSetAttributes(l, attrs)
@@ -627,20 +643,10 @@ func fontDescription(font driver.Font, ui string) uintptr {
 	if font.Italic {
 		pangoFontDescriptionSetStyle(desc, pangoStyleItalic)
 	}
-	return desc
-}
-
-// fontFeatures is v's OpenType features as Pango's font-features
-// attribute takes them, "smcp 1, tnum 1"; empty when it has none.
-func fontFeatures(v driver.FontVariant) string {
-	var b strings.Builder
-	for i, tag := range v.Tags() {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteString(tag + " 1")
+	if vars := driver.FontPangoVariations(font); vars != "" {
+		pangoFontDescriptionSetVariations(desc, cstr(vars))
 	}
-	return b.String()
+	return desc
 }
 
 // canvasImages are the images a window's canvases draw, by
@@ -658,7 +664,7 @@ func (p *canvasPlayer) image(op *driver.DrawOp) {
 	var picWidth int
 	var nat driver.Size
 	if imgSrc.Offscreen != nil {
-		e := p.w.offscreenSurface(p.v, imgSrc.Offscreen)
+		e := p.offscreenSurface(imgSrc.Offscreen)
 		if e == nil || e.surface == 0 {
 			return
 		}
@@ -667,7 +673,7 @@ func (p *canvasPlayer) image(op *driver.DrawOp) {
 			return
 		}
 	} else {
-		s := p.w.canvasImage(*imgSrc, p.v)
+		s := p.canvasImage(*imgSrc)
 		if s == nil || s.pic == nil {
 			p.waited = p.waited || (s != nil && s.load != nil)
 			return
@@ -713,6 +719,9 @@ func (p *canvasPlayer) drawImage(op *driver.DrawOp, surf uintptr, picWidth int, 
 		k := float64(nat.Width) / float64(picWidth)
 		cairoScale(cr, k, k)
 		setPictureSource(cr, surf, op.Sampling)
+		// Pad edge texels so bilinear scaling does not blend with transparent
+		// pixels outside the source surface; the clip above bounds the draw.
+		cairoPatternSetExtend(cairoGetSource(cr), 3) // CAIRO_EXTEND_PAD
 		cairoPaintWithAlpha(cr, p.st.alpha)
 		cairoRestore(cr)
 	})

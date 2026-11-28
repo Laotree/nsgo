@@ -144,6 +144,9 @@ apple:
 macos:
   entitlements:
     com.apple.security.network.client: true
+sign:
+  profile: profiles/app.mobileprovision
+  watch_profile: profiles/watch.mobileprovision
 `)
 
 	cfg, err := project.Load(dir)
@@ -188,6 +191,12 @@ macos:
 	}
 	if !slices.Contains(cfg.LinuxCategories(), "Game") {
 		t.Errorf("LinuxCategories() = %v, want Game included", cfg.LinuxCategories())
+	}
+	if want := filepath.Join(dir, "profiles", "app.mobileprovision"); cfg.Sign.Profile != want {
+		t.Errorf("Sign.Profile = %q, want %q", cfg.Sign.Profile, want)
+	}
+	if want := filepath.Join(dir, "profiles", "watch.mobileprovision"); cfg.Sign.WatchProfile != want {
+		t.Errorf("Sign.WatchProfile = %q, want %q", cfg.Sign.WatchProfile, want)
 	}
 }
 
@@ -383,5 +392,57 @@ launch_screen:
 	}
 	if cfg.LaunchScreen == nil || cfg.LaunchScreen.Color() != 0xff14a7cd || cfg.LaunchScreen.Dark.Color() != 0xff000000 {
 		t.Errorf("LaunchScreen colors = %#x / %#x", cfg.LaunchScreen.Color(), cfg.LaunchScreen.Dark.Color())
+	}
+}
+
+func TestLoadRegistries(t *testing.T) {
+	dir := t.TempDir()
+	writeYAML(t, dir, `name: App
+registries:
+  "@acme": https://nsgo.acme.example/registry.yaml
+  "@local": http://127.0.0.1:8080/registry.yaml
+  "@team": tools/registry.yaml
+`)
+	cfg, err := project.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	regs, err := cfg.ParseRegistries()
+	if err != nil {
+		t.Fatalf("ParseRegistries: %v", err)
+	}
+	if len(regs) != 3 {
+		t.Fatalf("got %d registries, want 3: %+v", len(regs), regs)
+	}
+	if regs[0].Name != "@acme" || regs[0].URL != "https://nsgo.acme.example/registry.yaml" || regs[0].Path != "" {
+		t.Errorf("regs[0] = %+v", regs[0])
+	}
+	if regs[1].Name != "@local" || regs[1].URL != "http://127.0.0.1:8080/registry.yaml" {
+		t.Errorf("regs[1] = %+v", regs[1])
+	}
+	if want := filepath.Join(dir, "tools", "registry.yaml"); regs[2].Name != "@team" || regs[2].Path != want {
+		t.Errorf("regs[2] = %+v, want Path %q", regs[2], want)
+	}
+
+	for _, tc := range []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"reserved nsgo", "name: App\nregistries:\n  \"@nsgo\": https://example.com/r.yaml\n", "reserved"},
+		{"missing at", "name: App\nregistries:\n  acme: https://example.com/r.yaml\n", "must start with @"},
+		{"non-loopback http", "name: App\nregistries:\n  \"@acme\": http://example.com/r.yaml\n", "https"},
+		{"query string", "name: App\nregistries:\n  \"@acme\": https://example.com/r.yaml?a=1\n", "query"},
+		{"absolute path", "name: App\nregistries:\n  \"@acme\": /tmp/r.yaml\n", "relative to nsgo.yaml"},
+		{"anchor", "name: App\nregistries:\n  \"@acme\": &u https://example.com/r.yaml\n", "anchors are not allowed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := t.TempDir()
+			writeYAML(t, d, tc.yaml)
+			_, err := project.Load(d)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load error = %v, want substring %q", err, tc.want)
+			}
+		})
 	}
 }

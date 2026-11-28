@@ -34,12 +34,18 @@ func check(ctx context.Context, p *project, target string, jobs int) error {
 		return err
 	}
 	defer unlock()
+	if err := checkModuleComponents(ctx, p); err != nil {
+		return err
+	}
 	s := begin("checking catalogs")
 	if err := p.prepareCatalogs(ctx, true, "./..."); err != nil {
 		s.fail()
 		return err
 	}
 	s.done("checked catalogs", "")
+	if err := checkCopies(p.Dir); err != nil {
+		return err
+	}
 	if !p.bare && !hasGo(p.Dir) {
 		return checkTSX(ctx, p)
 	}

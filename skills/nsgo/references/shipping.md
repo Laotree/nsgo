@@ -38,10 +38,11 @@ build:
 # release: { github: me/hello, tag_prefix: v }
 # updates: { key: <public key from nsgo keygen> }
 # store: { dir: store }       # YAML and Markdown store listings per language
+# registries: { "@acme": https://nsgo.acme.example/registry.yaml, "@team": tools/registry.yaml }  # custom registries for nsgo add @name/item
 # steam: { app_id: 480 }      # use your Steamworks App ID for native dev
 ```
 
-A flag replaces the value it names (`-target`, `-version`, `-output`, or the signing profiles `-profile`, `-widgets-profile`, `-share-profile` and `-clip-profile`); `nsgo build -h` lists them. Go tools that read `nsgo.yaml` share the tool's schema, defaults and validation through `github.com/nsgo-dev/nsgo/project` (`project.Load`, `project.Config.Channel`). Read the version-matched [Building and shipping](https://nsgo.dev/docs/building.md) page for the rest: installers, store packages, signing, notarizing, GitHub releases, updates, file types, App Clips, widgets and mini programs.
+A flag replaces the value it names (`-target`, `-version`, `-output`, or the signing profiles `-profile`, `-watch-profile`, `-widgets-profile`, `-share-profile` and `-clip-profile`); `nsgo build -h` lists them. Go tools that read `nsgo.yaml` share the tool's schema, defaults and validation through `github.com/nsgo-dev/nsgo/project` (`project.Load`, `project.Config.Channel`). Read the version-matched [Building and shipping](https://nsgo.dev/docs/building.md) page for the rest: installers, store packages, signing, notarizing, GitHub releases, updates, file types, App Clips, widgets and mini programs.
 
 Set `game: true` for game classification and Game Mode metadata, and `gamepad: true` when the app supports a hardware gamepad. See [Games](https://nsgo.dev/docs/building.md#games).
 
@@ -74,7 +75,7 @@ Linux store builds write an installable `.flatpak` in Go alongside the archive a
 
 Android store builds require API 36 or higher. Record outstanding store questionnaires in `compliance` and declare Apple's export compliance in `apple.info` ([Store compliance](https://nsgo.dev/docs/building.md#store-compliance)).
 
-For Google Play, build with `-target android -channel store`, then use `nsgo publish -target android -track internal`. Set `NSGO_PLAY_SERVICE_ACCOUNT` to the service account JSON key or its file path. [Google Play publishing](https://nsgo.dev/docs/building.md#publish-to-google-play)
+For Google Play, build with `-target android -channel store`, then use `nsgo publish -target android -track internal`. Authenticate with `NSGO_PLAY_SERVICE_ACCOUNT` (service account JSON key or file path, taking precedence) or Google Application Default Credentials (`gcloud auth application-default login --impersonate-service-account=…`, `GOOGLE_APPLICATION_CREDENTIALS`, or Workload Identity Federation such as `google-github-actions/auth`). [Google Play publishing](https://nsgo.dev/docs/building.md#publish-to-google-play)
 
 For Steam, upload the desktop target directories directly. Use `steam-launch.sh` for Linux x64 and upload `nsgo-gtk/` with it. Native dev with `steam.app_id` writes `steam_appid.txt` into its build and starts there. The depot output excludes that file, installers and self-updaters.
 
@@ -119,7 +120,7 @@ Set `apple.share_types: [public.url, public.image]` for the UTIs an iOS share ex
 
 ## Secrets
 
-Never commit secret keys or passwords. The tool reads them from the environment: `NSGO_UPDATES_KEY` for update feeds, `NSGO_KEYSTORE_PASSWORD` and `NSGO_KEY_PASSWORD` for Android keystores, `NSGO_CERTIFICATE_PASSWORD` for a Windows code signing certificate, `NSGO_NOTARY_KEY`, `NSGO_NOTARY_KEY_ID` and `NSGO_NOTARY_ISSUER` for notarizing in CI, `NSGO_APP_STORE_KEY`, `NSGO_APP_STORE_KEY_ID` and `NSGO_APP_STORE_ISSUER` (falling back to the notary key) for App Store Connect listings, `NSGO_PLAY_SERVICE_ACCOUNT` for Google Play listings, and `NSGO_ROOT_KEY` and `NSGO_RELEASE_KEY` for signed TSX packages. Public keys belong in `nsgo.yaml` and the app's code.
+Never commit secret keys or passwords. The tool reads them from the environment: `NSGO_UPDATES_KEY` for update feeds, `NSGO_KEYSTORE_PASSWORD` and `NSGO_KEY_PASSWORD` for Android keystores, `NSGO_CERTIFICATE_PASSWORD` for a Windows code signing certificate, `NSGO_NOTARY_KEY`, `NSGO_NOTARY_KEY_ID` and `NSGO_NOTARY_ISSUER` for notarizing in CI, `NSGO_APP_STORE_KEY`, `NSGO_APP_STORE_KEY_ID` and `NSGO_APP_STORE_ISSUER` (falling back to the notary key) for App Store Connect listings, `NSGO_PLAY_SERVICE_ACCOUNT` for Google Play (falling back to Google Application Default Credentials when unset), and `NSGO_ROOT_KEY` and `NSGO_RELEASE_KEY` for signed TSX packages. Public keys belong in `nsgo.yaml` and the app's code.
 
 Use `icon.windows` and `icon.linux` for their square PNGs, and `icon.android.png` for an independent Android bitmap; all fall back to `icon.png`. `dev.icon` has the same fields. Apple package minima use quoted native plist values in `apple.info`: `LSMinimumSystemVersion` for macOS, `MinimumOSVersion` for iOS/tvOS/watchOS. Never go below runtime floors: macOS 13, iOS 15, tvOS 17, watchOS 26; App Clips use `app_clip.minimum`. [Building](https://nsgo.dev/docs/building.md).
 

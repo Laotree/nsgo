@@ -13,9 +13,17 @@
 //	                                                      on a platform
 //	nsgo check [-target T] [-jobs N] [dir]               vet the app and type-check its TSX
 //	nsgo i18n  [-source L] [dir]                         check catalogs and write their Go code
-//	nsgo add   [-dry-run] [-y] name|module[@version] ... go get libraries once their plan is shown and
-//	                                                      confirmed, never moving NSGo off its releases;
-//	                                                      -list [words...] lists NSGo's built-in index
+//	nsgo add    [-dry-run] [-y] [-diff] [-dir D] [-tests=false] name|@registry/name|module[@version][#component] ...
+//	                                                      go get libraries or copy declared components once
+//	                                                      their plan is shown and confirmed, never moving NSGo
+//	                                                      off its releases; -list [@registry] [words...] lists
+//	                                                      NSGo's index and configured registries
+//	nsgo diff   [-stat] [-exit-code] [name | dir][@version]
+//	                                                      show what the app changed in a copied component,
+//	                                                      what another version would change, or list copies
+//	nsgo remove [-dry-run] [-y] name|@registry/name|module ...
+//	                                                      drop libraries the module no longer imports,
+//	                                                      through a go mod tidy shown and confirmed first
 //	nsgo version                                         print which nsgo runs
 //	nsgo doctor                                          show which targets this machine builds and runs
 //	nsgo keygen                                          print a key pair for updates or signed packages
@@ -193,16 +201,56 @@ func main() {
 		var o addOptions
 		fs.BoolVar(&o.dryRun, "dry-run", false, "print the plan and write nothing")
 		fs.BoolVar(&o.yes, "y", false, "apply the plan without asking")
-		fs.BoolVar(&o.list, "list", false, "list libraries and components in NSGo's index")
+		fs.BoolVar(&o.list, "list", false, "list libraries and components from NSGo's index and configured registries, filtered by optional @registry or words")
+		fs.BoolVar(&o.diff, "diff", false, "print every copied component file in full")
+		fs.StringVar(&o.dir, "dir", "", "destination `directory` for the copied component, ending in its package name")
+		tests := fs.Bool("tests", true, "copy a component's _test.go files and testdata/")
 		if err = fs.Parse(args); err != nil {
 			break
 		}
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "tests" {
+				o.testsSet = true
+			}
+		})
+		o.skipTests = !*tests
 		var ask func(context.Context) (bool, error)
 		if stdinIsTerminal() {
 			ask = askToApply
 		}
 		err = addModules(ctx, o, fs.Args(), os.Stdout, ask)
 		// An interrupt fails add, which says what it left of go.mod and go.sum, rather than ending quietly with status 0 as the other commands do: the status tells a script whether the files were written.
+		if err != nil && ctx.Err() != nil {
+			report(err)
+			os.Exit(130)
+		}
+	case "diff":
+		fs := flag.NewFlagSet("diff", flag.ExitOnError)
+		var o diffOptions
+		fs.BoolVar(&o.stat, "stat", false, "print changed lines per file")
+		fs.BoolVar(&o.exitCode, "exit-code", false, "exit with status 1 when there are differences")
+		if err = parseCommand(fs, args, 1); err != nil {
+			break
+		}
+		var changed bool
+		changed, err = diffCommand(ctx, o, fs.Arg(0), os.Stdout, os.Stderr)
+		if err == nil && o.exitCode && changed {
+			os.Exit(1)
+		}
+	case "remove":
+		fs := flag.NewFlagSet("remove", flag.ExitOnError)
+		var o removeOptions
+		fs.BoolVar(&o.dryRun, "dry-run", false, "print the plan and write nothing")
+		fs.BoolVar(&o.yes, "y", false, "apply the plan without asking")
+		if err = fs.Parse(args); err != nil {
+			break
+		}
+		var ask func(context.Context) (bool, error)
+		if stdinIsTerminal() {
+			ask = askToApplyRemove
+		}
+		err = removeModules(ctx, o, fs.Args(), os.Stdout, ask)
+		// An interrupt fails remove, which says what it left of go.mod and go.sum, rather than ending quietly with status 0 as the other commands do: the status tells a script whether the files were written.
 		if err != nil && ctx.Err() != nil {
 			report(err)
 			os.Exit(130)
@@ -325,8 +373,10 @@ func usage() {
   nsgo test  [-run REGEXP] [-bench REGEXP] [-junit FILE] [-trace] [-target macos|windows|linux|web|ios_simulator|tvos_simulator|android [-fps]] [packages... | dir | App.tsx < steps] [-- go test flags]
   nsgo check [-target all|macos_arm64,windows_x64,linux_x64,ios,web,...] [dir]
   nsgo i18n  [-source L] [dir]
-  nsgo add   [-dry-run] [-y] name|module[@version] ...
-  nsgo add   -list [words...]
+  nsgo add    [-dry-run] [-y] [-diff] [-dir D] [-tests=false] name|@registry/name|module[@version][#component] ...
+  nsgo add    -list [@registry] [words...]
+  nsgo diff   [-stat] [-exit-code] [name | dir][@version]
+  nsgo remove [-dry-run] [-y] name|@registry/name|module ...
   nsgo doctor
   nsgo version
   nsgo keygen
@@ -346,9 +396,11 @@ tests accept -short, -count, -cpu, -parallel, -failfast and -fullpath.
 
 add is go get after a plan: it shows what go.mod and go.sum would
 get, refuses to move NSGo off its releases, and asks before writing;
+remove refuses libraries the module still imports and plans go mod tidy
+on copies of go.mod and go.sum without lowering another module. In both,
 -y applies without asking, and without a terminal nothing is written
-unless -y is given. A module that pins an nsgo from before add is
-told which release to get instead.
+unless -y is given. A module that pins an nsgo from before add or remove
+is told which release to get instead.
 
 Any other command X runs the module's go.mod tool X with go tool, else
 nsgo-X on PATH. In a module that pins nsgo at another version, its own

@@ -65,14 +65,20 @@ d.DrawSVGIn(badge, 12, 12, 180, 60)
 
 用 `d.DrawAtlas(source, rects, xforms, alphas)` 按顺序绘制同一张图集的多个精灵。每个 `core.Bounds` 以图片自身的点为单位选择一个区域。对应的 `core.RSXform` 将区域的左上角放在 `TX, TY`，`SCos` 和 `SSin` 分别是缩放倍数乘以旋转角的余弦和正弦。例如，`core.RSXform{SCos: 0.5, TX: 40, TY: 20}` 将 32 点的区域缩到半宽半高，绘制在 (40, 20)。透明度传 `nil` 时沿用当前绘图透明度，也可以为每个精灵指定相乘的系数。
 
-`Drawing.Node` 给绘图的一部分命名，例如图表的柱或地图的区域，带边界、角色、标签和选中状态。辅助技术把这些部分当作画布的子元素，测试可以按标签、文本或 test ID 找到它们；按下其中一个就是按下它的中心。
+`Drawing.Node` 给绘图的一部分命名——例如图表的柱、滑块、开关或对话框——带稳定 `ID`、边界、角色、标签、`Hint`、数值范围（`Value`、`Min`、`Max`、`Step`）和 `ValueText`、状态（`Selected`、`Disabled`、`Expanded`、三态 `Checked` 与 `Busy`）、`Live` 区域（`core.LiveRegionPolite` 或 `core.LiveRegionAssertive`）以及 `Actions`（`core.CanvasActionActivate`、`CanvasActionIncrement`、`CanvasActionDecrement`、`CanvasActionScroll`、`CanvasActionDismiss`）。辅助技术将这些部分作为画布的子元素暴露，将节点操作发送到 `Canvas.OnAccessibilityAction`（未设置时回退到按压节点中心），并可通过 `Ref.SetAccessibilityFocusNode(id)` 将屏幕阅读器焦点移到指定节点。`nsgotest` 支持通过 `id:`、`label:`、`text:`、`role:`、`hint:`、`value:`、`live:` 和 `state:` 查找节点，并用 `AccessibilityAction` 触发其操作。
 
 ```go
 d.Node(core.CanvasNode{
-	Bounds: core.Bounds{Origin: core.Point{X: x, Y: y}, Size: core.Size{Width: w, Height: h}},
-	Role:   core.RoleButton,
-	Label:  "打开报告",
-	TestID: "report",
+	ID:        "volume",
+	Bounds:    core.Bounds{Origin: core.Point{X: x, Y: y}, Size: core.Size{Width: w, Height: h}},
+	Role:      core.RoleAdjustable,
+	Label:     "音量",
+	Hint:      "上下滑动调整音量",
+	Value:     level,
+	Min:       0,
+	Max:       100,
+	Step:      10,
+	ValueText: fmt.Sprintf("%.0f%%", level),
 })
 ```
 
@@ -135,6 +141,10 @@ d.ClearShader()
 `image0At` 读取某点所在的纹素，因此放大绘制的程序需要自己混合相邻纹素。uniform 中的 `AnimatedNode` 会让画布在帧时钟上重绘，无需提交，和 `Bind` 一样。WGSL 程序在这里读到的 `nsh.time` 为 0。Apple 各平台、Windows、Linux 和 Web 支持画布着色；Android、HarmonyOS、watchOS 和小程序会跳过 `DrawShader`，着色的图片按普通图片绘制。
 
 `core.ShaderEffect` 用 WGSL 绘制子元素，`core.ScreenEffect` 作用于整个界面。`core.ShaderTransition` 和 `core.ScreenTransition` 对 `Value` 变化前后的画面采样，`core.TransitionShader` 用于导航和对话框转场。在 Android 上，效果捕获需要 Android 10 或更新版本，并且 OpenGL ES 3.0 支持外部纹理。`core.Canvas` 和 `core.Shader` 都接受 `Label`，子元素会绘制在它们之上。
+
+## 导出绘制
+
+调用 `cx.RenderDrawing(d, size, scale, done)` 可在不打开窗口的情况下把已记录的 `*core.Drawing` 离屏光栅化为 `image.Image`（`*image.RGBA`），用于 `image/png` 导出或生成缩略图。`cx.Env().CanRenderDrawings()` 报告当前平台是否支持（macOS、iOS、tvOS、watchOS、Windows、Linux 和 Web）；不支持的平台会直接返回 `core.CodeUnavailable`。`size` 单位为点，`scale` 为每点像素数（均须为有限正数，总像素不超过 16 Mi），且绘制中的动画槽与视图画笔须已解析。
 
 ## 下一步
 

@@ -30,7 +30,7 @@ func (s *surface) configureInput(v *view, c *driver.InputConfig) {
 // sendInput sends the field's placeholder, kind and text to the host.
 func (s *surface) sendInput(v *view) {
 	c := &v.field.Config
-	s.w.op(opInput, v.id)
+	s.w.op(opInput, v.hostID)
 	s.w.str(c.Placeholder)
 	s.w.flag(c.Masked)
 	s.w.flag(c.Disabled || c.Readonly)
@@ -68,7 +68,7 @@ func (s *surface) relayoutField(v *view) {
 		p.Release()
 	}
 	s.touched(v)
-	s.redraw[v] = true
+	s.redraw[v.watchNode] = true
 }
 
 // drawField draws the field's text in its content box.
@@ -80,20 +80,12 @@ func (s *surface) drawField(v *view, ctx uintptr, baseUp bool) {
 	v.shown.Draw(ctx, float64(v.shownFrame().Size.Height), cgRect(box), baseUp)
 }
 
-// Host.swift's text events.
-const (
-	textChanged uint8 = iota
-	textSubmitted
-	textFocused
-	textBlurred
-)
-
 func hostText(id uint32, kind uint8, data *byte, n int) {
-	if s == nil || !s.inputGate.allowDirect(s.test != nil) {
+	if s == nil || !s.inputGate.allowText(s.test != nil, kind) {
 		return
 	}
-	v := s.view(driver.NodeID(id))
-	if v == nil || v.field == nil {
+	v := s.hostView(driver.NodeID(id))
+	if v == nil || v.deleted || v.field == nil {
 		return
 	}
 	text := ""

@@ -67,14 +67,20 @@ Scaled bitmaps use smooth sampling by default. For pixel art, call `d.SetImageSm
 
 Use `d.DrawAtlas(source, rects, xforms, alphas)` to draw many sprites from one image in order. Each `core.Bounds` selects a tile in the image's own points. The matching `core.RSXform` maps the tile's top-left corner to `TX, TY`, with `SCos` and `SSin` set to the scale times the cosine and sine of the rotation. For example, `core.RSXform{SCos: 0.5, TX: 40, TY: 20}` draws a 32-point tile at half size at (40, 20). Pass `nil` for full sprite opacity, or supply factors that multiply the current drawing alpha.
 
-`Drawing.Node` names a part of a drawing, such as a chart's bar or a map's region, with bounds, a role, a label and a selected state. Assistive technology reads those parts as the canvas's children, and tests find them by label, text or test ID; a press on one is a press at its center.
+`Drawing.Node` names a part of a drawing — such as a chart's bar, a slider, a toggle or a dialog — with an `ID`, bounds, a role, a label, a `Hint`, numeric range (`Value`, `Min`, `Max`, `Step`) and `ValueText`, states (`Selected`, `Disabled`, `Expanded`, `Checked` tri-state and `Busy`), a `Live` region (`core.LiveRegionPolite` or `core.LiveRegionAssertive`) and `Actions` (`core.CanvasActionActivate`, `CanvasActionIncrement`, `CanvasActionDecrement`, `CanvasActionScroll`, `CanvasActionDismiss`). Assistive technology reads those parts as the canvas's children, delivers node actions to `Canvas.OnAccessibilityAction` (falling back to pressing at the node's center when unset) and moves focus to a node with `Ref.SetAccessibilityFocusNode(id)`. In `nsgotest`, selectors find nodes by `id:`, `label:`, `text:`, `role:`, `hint:`, `value:`, `live:` and `state:`, and `AccessibilityAction` runs their actions.
 
 ```go
 d.Node(core.CanvasNode{
-	Bounds: core.Bounds{Origin: core.Point{X: x, Y: y}, Size: core.Size{Width: w, Height: h}},
-	Role:   core.RoleButton,
-	Label:  "Open the report",
-	TestID: "report",
+	ID:        "volume",
+	Bounds:    core.Bounds{Origin: core.Point{X: x, Y: y}, Size: core.Size{Width: w, Height: h}},
+	Role:      core.RoleAdjustable,
+	Label:     "Volume",
+	Hint:      "Swipe up or down to adjust",
+	Value:     level,
+	Min:       0,
+	Max:       100,
+	Step:      10,
+	ValueText: fmt.Sprintf("%.0f%%", level),
 })
 ```
 
@@ -160,6 +166,10 @@ d.ClearShader()
 `image0At` reads the texel under a point, so a program that magnifies blends neighboring texels itself. An `AnimatedNode` among the uniforms redraws the canvas on the frame clock, without a commit, as `Bind` does. A WGSL program reads `nsh.time` as 0 there. Apple platforms, Windows, Linux and the web shade canvases. Android, HarmonyOS, watchOS and mini programs leave `DrawShader` out and draw shaded images plain.
 
 `core.ShaderEffect` draws its children through WGSL and `core.ScreenEffect` covers the surface. `core.ShaderTransition` and `core.ScreenTransition` sample the pictures before and after `Value` changes. `core.TransitionShader` does this for navigation and dialogs. On Android, capturing views for effects requires Android 10 or later and OpenGL ES 3.0 with external texture support. `core.Canvas` and `core.Shader` both take `Label` and their children draw over them.
+
+## Exporting a drawing
+
+Call `cx.RenderDrawing(d, size, scale, done)` to rasterize a recorded `*core.Drawing` off the screen into an `image.Image` (`*image.RGBA`) without opening a window, ready for `image/png` export or thumbnailing. `cx.Env().CanRenderDrawings()` reports whether the target supports it (macOS, iOS, tvOS, watchOS, Windows, Linux and the web); elsewhere `RenderDrawing` calls `done` with `core.CodeUnavailable`. `size` is in points, `scale` is pixels per point (both finite and positive, up to 16 Mi pixels), and animation slots and view paints must already be resolved.
 
 ## Next
 

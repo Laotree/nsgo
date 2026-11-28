@@ -23,8 +23,61 @@ var (
 	cairoLib      uintptr
 )
 
-var libsOnce sync.Once
-var libsErr error
+var (
+	canvasLibsOnce sync.Once
+	canvasLibsErr  error
+	libsOnce       sync.Once
+	libsErr        error
+)
+
+func loadSharedLib(name string, candidates ...string) (uintptr, error) {
+	var last error
+	for _, candidate := range candidates {
+		h, err := purego.Dlopen(candidate, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+		if err == nil {
+			return h, nil
+		}
+		last = err
+	}
+	return 0, fmt.Errorf("%s: %w", name, last)
+}
+
+// openCanvasLibs loads only GLib, GObject, Pango, PangoCairo and Cairo,
+// without GTK or a display connection, for windowless text and canvas rendering.
+func openCanvasLibs() error {
+	canvasLibsOnce.Do(func() {
+		var err error
+		if glibLib, err = loadSharedLib("GLib", "libglib-2.0.so.0", "libglib-2.0.so"); err != nil {
+			canvasLibsErr = err
+			return
+		}
+		if gobjectLib, err = loadSharedLib("GObject", "libgobject-2.0.so.0", "libgobject-2.0.so"); err != nil {
+			canvasLibsErr = err
+			return
+		}
+		if pangoLib, err = loadSharedLib("Pango", "libpango-1.0.so.0", "libpango-1.0.so"); err != nil {
+			canvasLibsErr = err
+			return
+		}
+		if pangocairoLib, err = loadSharedLib("PangoCairo", "libpangocairo-1.0.so.0", "libpangocairo-1.0.so"); err != nil {
+			canvasLibsErr = err
+			return
+		}
+		if cairoLib, err = loadSharedLib("Cairo", "libcairo.so.2", "libcairo.so"); err != nil {
+			canvasLibsErr = err
+			return
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					canvasLibsErr = fmt.Errorf("Pango and Cairo are required: %v", r)
+				}
+			}()
+			bindCanvasLibs()
+		}()
+	})
+	return canvasLibsErr
+}
 
 // gtkDisplayReady checks the display as well as GTK's initialization flag: gtk_init_check may return true after its earlier display connection failed. A host that subsequently supplies GDK's default display can still start.
 func gtkDisplayReady() bool { return gtkInitCheck() != 0 && gdkDisplayGetDefault() != 0 }
@@ -34,43 +87,16 @@ func openLibs() error {
 	libsOnce.Do(func() {
 		// Its Wayland shim must precede GTK's libwayland dependency.
 		_ = loadLayerShell()
-		load := func(name string, candidates ...string) (uintptr, error) {
-			var last error
-			for _, candidate := range candidates {
-				h, err := purego.Dlopen(candidate, purego.RTLD_NOW|purego.RTLD_GLOBAL)
-				if err == nil {
-					return h, nil
-				}
-				last = err
-			}
-			return 0, fmt.Errorf("%s: %w", name, last)
-		}
 		var err error
-		if gtkLib, err = load("GTK 4", "libgtk-4.so.1", "libgtk-4.so.0", "libgtk-4.so"); err != nil {
+		if err = openCanvasLibs(); err != nil {
 			libsErr = err
 			return
 		}
-		if glibLib, err = load("GLib", "libglib-2.0.so.0", "libglib-2.0.so"); err != nil {
+		if gtkLib, err = loadSharedLib("GTK 4", "libgtk-4.so.1", "libgtk-4.so.0", "libgtk-4.so"); err != nil {
 			libsErr = err
 			return
 		}
-		if gobjectLib, err = load("GObject", "libgobject-2.0.so.0", "libgobject-2.0.so"); err != nil {
-			libsErr = err
-			return
-		}
-		if gioLib, err = load("GIO", "libgio-2.0.so.0", "libgio-2.0.so"); err != nil {
-			libsErr = err
-			return
-		}
-		if pangoLib, err = load("Pango", "libpango-1.0.so.0", "libpango-1.0.so"); err != nil {
-			libsErr = err
-			return
-		}
-		if pangocairoLib, err = load("PangoCairo", "libpangocairo-1.0.so.0", "libpangocairo-1.0.so"); err != nil {
-			libsErr = err
-			return
-		}
-		if cairoLib, err = load("Cairo", "libcairo.so.2", "libcairo.so"); err != nil {
+		if gioLib, err = loadSharedLib("GIO", "libgio-2.0.so.0", "libgio-2.0.so"); err != nil {
 			libsErr = err
 			return
 		}
@@ -320,9 +346,11 @@ var (
 	pangoFontDescriptionGetFamily     func(uintptr) uintptr
 	pangoFontDescriptionSetWeight     func(uintptr, int32)
 	pangoFontDescriptionSetStyle      func(uintptr, int32)
+	pangoFontDescriptionSetVariations func(uintptr, *byte)
 	pangoAttrListNew                  func() uintptr
 	pangoAttrListInsert               func(uintptr, uintptr)
 	pangoAttrListUnref                func(uintptr)
+	pangoAttrFontDescNew              func(uintptr) uintptr
 	pangoAttrFamilyNew                func(*byte) uintptr
 	pangoLanguageFromString           func(*byte) uintptr
 	pangoAttrLanguageNew              func(uintptr) uintptr
@@ -361,6 +389,7 @@ var (
 	pangoCairoShowLayout              func(uintptr, uintptr)
 	pangoCairoShowGlyphItem           func(uintptr, uintptr, uintptr)
 	pangoCairoUpdateLayout            func(uintptr, uintptr)
+	pangoCairoUpdateContext           func(uintptr, uintptr)
 
 	// Cairo.
 	cairoImageSurfaceCreate    func(int32, int32, int32) uintptr
@@ -500,15 +529,12 @@ func bind() {
 	bindSyscall(&gGetMonotonicTime, glibLib, "g_get_monotonic_time")
 	purego.RegisterLibFunc(&gSourceRemove, glibLib, "g_source_remove")
 	purego.RegisterLibFunc(&gIdleAdd, glibLib, "g_idle_add")
-	bindSyscall(&gFree, glibLib, "g_free")
 	purego.RegisterLibFunc(&gErrorFree, glibLib, "g_error_free")
 	purego.RegisterLibFunc(&gSetPrgname, glibLib, "g_set_prgname")
 	purego.RegisterLibFunc(&gStrfreev, glibLib, "g_strfreev")
 	purego.RegisterLibFunc(&gVariantNewString, glibLib, "g_variant_new_string")
 	purego.RegisterLibFunc(&gVariantNewBoolean, glibLib, "g_variant_new_boolean")
 	purego.RegisterLibFunc(&gVariantUnref, glibLib, "g_variant_unref")
-	bindSyscall(&gObjectRef, gobjectLib, "g_object_ref")
-	bindSyscall(&gObjectUnref, gobjectLib, "g_object_unref")
 	purego.RegisterLibFunc(&gObjectGetData, gobjectLib, "g_object_get_data")
 	purego.RegisterLibFunc(&gObjectSetData, gobjectLib, "g_object_set_data")
 	purego.RegisterLibFunc(&gTypeIsA, gobjectLib, "g_type_check_instance_is_a")
@@ -689,6 +715,27 @@ func bind() {
 	purego.RegisterLibFunc(&gtkWidgetInsertActionGroup, gtkLib, "gtk_widget_insert_action_group")
 	purego.RegisterLibFunc(&gActionMapRemoveAction, gioLib, "g_action_map_remove_action")
 
+	bindNative()
+	bindWidget()
+	bindRasterGTK()
+	bindDecor()
+	bindFileDrop()
+	bindPaste()
+	bindSystem()
+	bindEditing()
+	bindAccess()
+	bindTouchScroll()
+	bindTouches()
+	bindWindowPointer()
+}
+
+// bindCanvasLibs binds the GLib, GObject, Pango and Cairo symbols needed by
+// text layout and canvas playback without GTK or a display.
+func bindCanvasLibs() {
+	bindSyscall(&gFree, glibLib, "g_free")
+	bindSyscall(&gObjectRef, gobjectLib, "g_object_ref")
+	bindSyscall(&gObjectUnref, gobjectLib, "g_object_unref")
+
 	// Pango.
 	purego.RegisterLibFunc(&pangoCairoFontMapNew, pangocairoLib, "pango_cairo_font_map_new")
 	purego.RegisterLibFunc(&pangoCairoFontMapGetDefault, pangocairoLib, "pango_cairo_font_map_get_default")
@@ -698,7 +745,7 @@ func bind() {
 	}
 	bindSyscall(&pangoFontMapCreateContext, pangoLib, "pango_font_map_create_context")
 	bindSyscall(&pangoFontMapLoadFont, pangoLib, "pango_font_map_load_font")
-	bindSyscall(&pangoFontMapUnref, pangoLib, "g_object_unref") // PangoFontMap is a GObject
+	bindSyscall(&pangoFontMapUnref, gobjectLib, "g_object_unref") // PangoFontMap is a GObject
 	bindSyscall(&pangoFontDescribeWithAbsoluteSize, pangoLib, "pango_font_describe_with_absolute_size")
 	bindSyscall(&pangoFontDescriptionToString, pangoLib, "pango_font_description_to_string")
 	bindSyscall(&pangoGlyphStringNew, pangoLib, "pango_glyph_string_new")
@@ -736,9 +783,11 @@ func bind() {
 	purego.RegisterLibFunc(&pangoFontDescriptionSetAbsoluteSize, pangoLib, "pango_font_description_set_absolute_size")
 	bindSyscall(&pangoFontDescriptionSetWeight, pangoLib, "pango_font_description_set_weight")
 	bindSyscall(&pangoFontDescriptionSetStyle, pangoLib, "pango_font_description_set_style")
+	purego.RegisterLibFunc(&pangoFontDescriptionSetVariations, pangoLib, "pango_font_description_set_variations")
 	bindSyscall(&pangoAttrListNew, pangoLib, "pango_attr_list_new")
 	bindSyscall(&pangoAttrListInsert, pangoLib, "pango_attr_list_insert")
 	bindSyscall(&pangoAttrListUnref, pangoLib, "pango_attr_list_unref")
+	bindSyscall(&pangoAttrFontDescNew, pangoLib, "pango_attr_font_desc_new")
 	bindSyscall(&pangoAttrFamilyNew, pangoLib, "pango_attr_family_new")
 	bindSyscall(&pangoLanguageFromString, pangoLib, "pango_language_from_string")
 	bindSyscall(&pangoAttrLanguageNew, pangoLib, "pango_attr_language_new")
@@ -778,6 +827,7 @@ func bind() {
 	bindSyscall(&pangoCairoShowLayout, pangocairoLib, "pango_cairo_show_layout")
 	bindSyscall(&pangoCairoShowGlyphItem, pangocairoLib, "pango_cairo_show_glyph_item")
 	bindSyscall(&pangoCairoUpdateLayout, pangocairoLib, "pango_cairo_update_layout")
+	bindSyscall(&pangoCairoUpdateContext, pangocairoLib, "pango_cairo_update_context")
 
 	// Cairo.
 	purego.RegisterLibFunc(&cairoImageSurfaceCreate, cairoLib, "cairo_image_surface_create")
@@ -823,15 +873,4 @@ func bind() {
 	purego.RegisterLibFunc(&cairoPatternSetFilter, cairoLib, "cairo_pattern_set_filter")
 	purego.RegisterLibFunc(&cairoSurfaceWriteToPNG, cairoLib, "cairo_surface_write_to_png")
 	bindCanvas(cairoLib, pangocairoLib)
-	bindNative()
-	bindWidget()
-	bindDecor()
-	bindFileDrop()
-	bindPaste()
-	bindSystem()
-	bindEditing()
-	bindAccess()
-	bindTouchScroll()
-	bindTouches()
-	bindWindowPointer()
 }

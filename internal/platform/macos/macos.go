@@ -1268,6 +1268,7 @@ func (s *surface) environment() driver.Environment {
 		AudioSchedule:      apple.AudioAvailable(),
 		CanSendInput:       true,
 		CanLockPointer:     true,
+		CanRenderDrawings:  true,
 		HasWebView:         true,
 		SignInWithApple:    apple.AppleSignInAvailable(),
 		Purchases:          apple.PurchasesAvailable(),
@@ -2361,6 +2362,13 @@ func (s *surface) apply(b *driver.MountBatch) {
 		case driver.ItemCapture:
 			s.capture(it.ID, it.Count)
 			continue
+		case driver.ItemRenderDrawing:
+			if ch := canvases.Load(); ch != nil {
+				ch.renderDrawing(s, it.Count, it.RenderDrawing)
+			} else {
+				s.engine.Dispatch(driver.Event{Kind: driver.EventFiles, Count: it.Count, Text: driver.NoDrawingRenderer})
+			}
+			continue
 		case driver.ItemShare:
 			s.share(*it.Share, it.Count)
 			continue
@@ -2653,7 +2661,7 @@ func (s *surface) apply(b *driver.MountBatch) {
 		case driver.ItemAccessibilityLabel:
 			v.setLabel(it.Value)
 		case driver.ItemAccessibilityFocus:
-			v.focusAccessibility()
+			v.focusAccessibilityNode(it.Value)
 		case driver.ItemText:
 			v.layout.Release()
 			v.layout, _ = it.Text.Layout.(*apple.Layout)

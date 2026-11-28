@@ -1228,6 +1228,7 @@ func (s *surface) mount(v *treeView, b *driver.MountBatch) {
 	outsideBatch := func(it driver.MountItem) bool {
 		return it.Kind == driver.ItemRevealFile || it.Kind == driver.ItemTrashFile ||
 			it.Kind == driver.ItemOpenDirectory || it.Kind == driver.ItemReleaseDirectory ||
+			it.Kind == driver.ItemRenderDrawing ||
 			it.Kind == driver.ItemDiskSpace || it.Kind == driver.ItemDiscovery ||
 			it.Kind == driver.ItemPermission && it.Permission.Name == driver.PermissionLocalNetwork
 	}
@@ -1240,6 +1241,8 @@ func (s *surface) mount(v *treeView, b *driver.MountBatch) {
 				s.openDirectory(v.id, it.Count, it.Value)
 			case driver.ItemReleaseDirectory:
 				s.releaseDirectory(v.id, it.Count, it.Value)
+			case driver.ItemRenderDrawing:
+				s.dispatchTo(v.id, driver.Event{Kind: driver.EventFiles, Count: it.Count, Text: driver.NoDrawingRenderer})
 			case driver.ItemDiskSpace:
 				s.diskSpace(v.id, it.Count, it.Value)
 			case driver.ItemDiscovery:
@@ -1891,7 +1894,7 @@ func encode(w *writer, b *driver.MountBatch, first bool, requests []uint32, nati
 				w.u32(1)
 			}
 		case driver.ItemSetClipboard, driver.ItemAnnounce, driver.ItemTitle, driver.ItemAccessibilityLabel,
-			driver.ItemKeepImage, driver.ItemReleaseImage:
+			driver.ItemAccessibilityFocus, driver.ItemKeepImage, driver.ItemReleaseImage:
 			w.str(it.Value)
 		case driver.ItemReadClipboard:
 			w.u32(it.Count)

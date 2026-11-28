@@ -14,7 +14,7 @@ func (p *canvasPlayer) atlas(op *driver.DrawOp) {
 		p.atlasImages(op, sprites)
 		return
 	}
-	slot := p.w.canvasImage(*imgSrc, p.v)
+	slot := p.canvasImage(*imgSrc)
 	if slot == nil || slot.pic == nil {
 		p.waited = p.waited || (slot != nil && slot.load != nil)
 		return
@@ -26,6 +26,7 @@ func (p *canvasPlayer) atlas(op *driver.DrawOp) {
 	}
 	pattern := cairoPatternCreateForSurface(src)
 	defer cairoPatternDestroy(pattern)
+	cairoPatternSetExtend(pattern, 3) // CAIRO_EXTEND_PAD
 	if op.Sampling == driver.ImageSamplingNearest {
 		const cairoFilterNearest = 3
 		cairoPatternSetFilter(pattern, cairoFilterNearest)

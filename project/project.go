@@ -72,6 +72,9 @@ type Config struct {
 	// Capabilities are what a TSX app's code may reach once signed into a
 	// package (nsgo publish), and under nsgo dev -limits.
 	Capabilities yaml.Node `yaml:"capabilities"`
+	// Registries maps @name prefixes to custom registry YAML URLs or paths
+	// relative to nsgo.yaml.
+	Registries yaml.Node `yaml:"registries"`
 	// StatusBar is a TSX app's default status bar on iOS and Android, under its
 	// pages' and dialogs': foreground (auto, light or dark) and hidden.
 	StatusBar yaml.Node `yaml:"status_bar"`
@@ -79,6 +82,9 @@ type Config struct {
 	// per language, Source's with every message. Their languages are the ones the
 	// app shows.
 	I18n I18nConfig `yaml:"i18n"`
+	// Components configures where copied components are placed: Dir, relative to
+	// nsgo.yaml, holds copies written by nsgo add (default: components).
+	Components ComponentsConfig `yaml:"components"`
 	// Web is the web target's configuration.
 	Web WebConfig `yaml:"web"`
 	// MiniProgram is the mini program targets' configuration.
@@ -110,6 +116,9 @@ type Config struct {
 	LiveActivities LiveActivities `yaml:"live_activities"`
 	// AppClip is the app's App Clip, which nsgo build nests in its iOS package.
 	AppClip *AppClip `yaml:"app_clip"`
+	// QuickLook is the app's macOS QuickLook Preview Extension
+	// (com.apple.quicklook.preview), embedded in Contents/PlugIns.
+	QuickLook *QuickLook `yaml:"quicklook"`
 	// Android is the Android target's configuration.
 	Android    AndroidConfig   `yaml:"android"`
 	Compliance StoreCompliance `yaml:"compliance"`
@@ -136,6 +145,15 @@ type Config struct {
 
 	idDefault  bool
 	allTargets bool
+}
+
+// Registry is one custom registry entry declared under nsgo.yaml's registries map.
+type Registry struct {
+	Name string // prefixed with '@', e.g. "@acme"
+	Raw  string // URL or relative path as written in nsgo.yaml
+	URL  string // non-empty for remote registries
+	Path string // absolute path on disk for local file registries
+	Line int    // line in nsgo.yaml
 }
 
 // Widget is an app's home-screen card on HarmonyOS: what its 2x2 card says.
@@ -233,6 +251,11 @@ type I18nConfig struct {
 	Source string `yaml:"source"`
 	// Coverage is warn (default) or off for dependency translations.
 	Coverage string `yaml:"coverage"`
+}
+
+// ComponentsConfig is nsgo.yaml's components section.
+type ComponentsConfig struct {
+	Dir string `yaml:"dir"`
 }
 
 // WebConfig is nsgo.yaml's web section.
@@ -344,6 +367,19 @@ type AppClip struct {
 	Domains       []string `yaml:"domains"`
 	Notifications bool     `yaml:"notifications"`
 	Location      bool     `yaml:"location"`
+}
+
+// QuickLook is nsgo.yaml's quicklook section: a macOS QuickLook Preview
+// Extension (com.apple.quicklook.preview) embedded in Contents/PlugIns.
+type QuickLook struct {
+	// Main is the Go main package path of the QuickLook preview extension,
+	// such as ./cmd/quicklook.
+	Main string `yaml:"main"`
+	// ID is the extension's bundle identifier: <app id>.quicklook by default.
+	ID string `yaml:"id"`
+	// Types are the UTIs the extension previews (QLSupportedContentTypes).
+	// When omitted, all UTIs declared in file_types are used.
+	Types []string `yaml:"types"`
 }
 
 // AndroidConfig is nsgo.yaml's android section.
@@ -494,10 +530,12 @@ type AssetPack struct {
 type Signing struct {
 	Identity          string `yaml:"identity"`
 	Profile           string `yaml:"profile"`
+	WatchProfile      string `yaml:"watch_profile"`
 	WidgetsProfile    string `yaml:"widgets_profile"`
 	ShareProfile      string `yaml:"share_profile"`
 	AssetPacksProfile string `yaml:"asset_packs_profile"`
 	ClipProfile       string `yaml:"clip_profile"`
+	QuickLookProfile  string `yaml:"quicklook_profile"`
 	MacOSProfile      string `yaml:"macos_profile"`
 	Installer         string `yaml:"installer"`
 	Keystore          string `yaml:"keystore"`
@@ -568,6 +606,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("nsgo.yaml: name %q has both a single and a double quote, which go build cannot pass to the app; use one kind", c.Name)
 	}
 	if _, err := c.ParseCapabilities(); err != nil {
+		return err
+	}
+	if _, err := c.ParseRegistries(); err != nil {
 		return err
 	}
 	if err := c.validateLicenses(); err != nil {
@@ -673,6 +714,9 @@ func (c *Config) Validate() error {
 	if err := c.validateAppClip(); err != nil {
 		return fmt.Errorf("nsgo.yaml: %w", err)
 	}
+	if err := c.validateQuickLook(); err != nil {
+		return fmt.Errorf("nsgo.yaml: %w", err)
+	}
 	if err := c.validatePrivacy(); err != nil {
 		return fmt.Errorf("nsgo.yaml: %w", err)
 	}
@@ -692,8 +736,8 @@ func (c *Config) Validate() error {
 		c.Linux.Share = c.Resolve(c.Linux.Share)
 	}
 	for _, path := range []*string{
-		&c.Sign.Profile, &c.Sign.WidgetsProfile, &c.Sign.ShareProfile,
-		&c.Sign.AssetPacksProfile, &c.Sign.ClipProfile, &c.Sign.MacOSProfile,
+		&c.Sign.Profile, &c.Sign.WatchProfile, &c.Sign.WidgetsProfile, &c.Sign.ShareProfile,
+		&c.Sign.AssetPacksProfile, &c.Sign.ClipProfile, &c.Sign.QuickLookProfile, &c.Sign.MacOSProfile,
 		&c.Sign.Keystore, &c.Sign.Certificate,
 	} {
 		if *path != "" {
@@ -846,6 +890,12 @@ func (c *Config) ParseCapabilities() (*pkg.Capabilities, error) {
 		return nil, fmt.Errorf("nsgo.yaml: %w", err)
 	}
 	return &caps, nil
+}
+
+// ParseRegistries reads and validates nsgo.yaml's registries mapping strictly,
+// returning entries sorted by Name, or nil when none are configured.
+func (c *Config) ParseRegistries() ([]Registry, error) {
+	return parseRegistries(&c.Registries, c.Dir)
 }
 
 // GeneratedID is the bundle ID of a project whose nsgo.yaml gives none, made

@@ -19,7 +19,7 @@ Everything to hand out lands in `dist/releases`, the only directory to look in:
 | --- | --- |
 | `*.dmg`, `*-setup.exe`, `*.deb`, `*.pkg.tar.gz`, `*.AppImage` | [Installers](#installers) for macOS, Windows and Linux |
 | `*.AppImage.zsync` | Delta update controls for AppImageUpdate and compatible launchers |
-| `*-ios.ipa`, `*-tvos.ipa`, `*.apk` | The iOS, tvOS and Android packages, for the stores or devices |
+| `*-ios.ipa`, `*-tvos.ipa`, `*-watchos.ipa`, `*.apk` | The iOS, tvOS, watchOS and Android packages, for the stores or devices |
 | `*.pkg`, `*.msix`, `*.aab`, `*.flatpak`, `*.tar.gz` and `flatpak/` | A `store` build's [store packages](#store-packages) |
 | `install.sh`, `install.ps1` | Scripts installing the app from [GitHub releases](#publish-on-github) |
 | `appcast-<target>.xml` | The feeds [updating](#updates) apps read |
@@ -27,7 +27,7 @@ Everything to hand out lands in `dist/releases`, the only directory to look in:
 | `*-web.zip` | The site, to unpack and serve as it is |
 | `miniprogram/<platform>/` | Each mini program's project, to upload from its developer tool |
 
-Each file is named `<name>-<version>-<system>-<arch>`, such as `hello-1.2.0-windows-x64-setup.exe`, so users find their system's on a release page, and has its `.sha256` beside it. A build of another version empties the directory first; builds of the same version, on other machines too, add to it. Simulators' and watchOS's packages stay in their `dist/<name>-<version>-<target>` directories.
+Each file is named `<name>-<version>-<system>-<arch>`, such as `hello-1.2.0-windows-x64-setup.exe`, so users find their system's on a release page, and has its `.sha256` beside it. A build of another version empties the directory first; builds of the same version, on other machines too, add to it. Simulators' packages stay in their `dist/<name>-<version>-<target>` directories.
 
 The web site includes `.wasm.br` and `.wasm.gz` when they are smaller than the original module. Enable precompressed files on hosts that support them. Serve them at the original `.wasm` URL with `Content-Type: application/wasm`, the matching `Content-Encoding`, and `Vary: Accept-Encoding`. The original module works on any static host. [Publishing on the web](web.md) covers semantic headings, browser links, per-page metadata and CDN loading.
 
@@ -117,6 +117,7 @@ build:
 # release: { github: me/hello }  # the GitHub repository the install scripts and updates install from, else the Git remote origin's; tag_prefix: v by default
 # updates: { key: <public key> }  # how the app updates, by platform and channel: see Updates
 # store: { dir: store }           # store listings directory (YAML and Markdown per language)
+# registries: { "@acme": https://nsgo.acme.example/registry.yaml, "@team": tools/registry.yaml }  # custom registries for nsgo add @name/item
 # miniprogram: { appid: { wechat: wx0123456789abcdef, alipay: "2021000000000000" }, custom_navigation: false }  # the mini programs'
 ```
 
@@ -242,6 +243,62 @@ It writes `go.mod` and `go.sum` only when neither has changed since planning, ea
 
 `add` is new after NSGo 0.3.4. In a module that pins 0.3.4 or an earlier release, an installed `nsgo` does not run [the module's nsgo](#the-modules-nsgo) for it but prints the `go get github.com/nsgo-dev/nsgo@<version>` that brings `add`; there, `go tool nsgo add` runs the pinned nsgo, which does not know `add`.
 
+### Custom registries
+
+Teams can name their own libraries and forks in `nsgo.yaml` under `registries:` without shadowing NSGo's own names:
+
+```yaml
+registries:
+  "@acme": https://nsgo.acme.example/registry.yaml
+  "@team": tools/registry.yaml
+```
+
+Each key is `@` followed by 1 to 64 lowercase letters, digits or hyphens (not starting or ending with `-`; `@nsgo` is reserved). Each value is an `https` URL without user credentials, query or fragment (`http` is accepted only for a loopback host), or a path relative to `nsgo.yaml`. Unknown keys and bad entries fail with their line number, and `nsgo` never adds an unconfigured registry to `nsgo.yaml` on its own.
+
+```sh
+nsgo add @acme/chart                 # resolve chart in @acme; bare names never check custom registries
+nsgo add @acme/chart@v1.3.0          # pin a specific version
+nsgo add -list                       # list NSGo's index and every configured registry's items (with their @prefix)
+nsgo add -list @acme charts          # filter one registry by words across name, description and tags
+```
+
+A registry file is a single strict YAML document of at most 4 MiB with `version: 1` and an `items` list (`name`, `module`, optional `component`, optional tagged `version`, single-line `description`, SPDX `license`, optional `https` `homepage`, and optional lowercase `tags`), without anchors, aliases, merge keys, control characters or Unicode format characters. Remote registries follow up to 10 redirects (refusing redirects to plain HTTP or non-loopback HTTP), use a 30-second connect timeout and 5-minute total timeout, and cache their copy and ETag at `<user cache dir>/nsgo/registries/<sha256>.yaml`. Offline, `nsgo add` reuses the cached copy and shows its age on the plan's first line alongside the registry and URL; with no cached copy, the error names the URL. Private registries use a file in the repository or an intranet server, and private Go modules keep `GOPRIVATE` and `GOAUTH`.
+
+`nsgo add` also copies components declared in a module's `nsgo-module.yaml` (`nsgo add [-diff] [-dir D] [-tests=false] name|@registry/name|module[@version]#component`), rewriting their imports, generating their catalogs, checking their licenses and recording their source in `nsgo-copy.yaml`. See [Copying components](copying-components.md).
+
+## Removing libraries
+
+Once no package in the module imports a library, drop it with `nsgo remove`, which takes a bare name from NSGo's built-in index, a `@registry/name` from `nsgo.yaml`'s `registries`, or a Go module path, and previews `go mod tidy` on copies of `go.mod` and `go.sum` before writing:
+
+```sh
+nsgo remove media                           # resolve a bare name in NSGo's built-in index
+nsgo remove @acme/chart                     # resolve a name in a configured custom registry
+nsgo remove github.com/acme/chart           # show what go mod tidy drops and ask before writing
+nsgo remove -dry-run github.com/acme/chart  # print the plan and write nothing
+nsgo remove -y github.com/acme/chart        # apply without asking
+```
+
+```text
+github.com/acme/chart
+  module     remove github.com/acme/chart v1.3.0
+
+example.com/hello
+  go.mod     - require github.com/acme/chart v1.3.0
+             - require example.com/units v1.0.0
+             - require example.com/stray v0.1.0, also tidied
+  go.sum     - 6 lines
+Apply these changes? [y/N]
+```
+
+Before running `go mod tidy`, `remove` checks imports with `go mod why -m`, which counts every build tag (`_ios.go` and test files included), and refuses while any package of the module still imports the library directly, naming that package. A name that resolves to a copied component is also refused before anything is planned. Custom registries print their `registry @<name> (<source>)` line at the top of the plan, as `add` does.
+
+`remove` runs `go mod tidy` in `add`'s environment (`GOTOOLCHAIN=local`, `GOWORK=off` and proxy-only `GOPROXY`) and never lowers another module's version; versions raised when the library was added stay, matching what `go mod tidy` writes. In the plan:
+
+- lines unrelated to the removed library or its dropped dependencies are marked `also tidied`;
+- a library that stays because another dependency needs it or because `go.mod` declares one of its tools says why;
+- any `replace` of the library in `go.mod` is mentioned as left in place.
+
+Confirmation, `-dry-run`, `-y`, running without a terminal, interrupts, atomic writes and `go mod vendor` follow the same rules as `add`. `remove` is likewise new after NSGo 0.3.4.
 ## Libraries from Go packages
 
 Desktop app builds and target tests compile app code with `CGO_ENABLED=0`, as they do NSGo itself. If an app package contains cgo files, the build stops and names them instead of silently dropping them. Use purego and `nsgo-natives.yaml` for native libraries.
@@ -374,7 +431,17 @@ The Info.plist of each iOS, tvOS and watchOS bundle `build` writes for devices, 
 
 ### Publish to Google Play
 
-Enable the Google Play Developer API and give a service account permission to release the app to the chosen track. Set `NSGO_PLAY_SERVICE_ACCOUNT` to the account's JSON key or to the path of its key file. [Google Play API setup](https://developers.google.com/android-publisher/getting_started)
+Enable the Google Play Developer API and grant a service account (or user account) permission to release the app in Play Console › Users and permissions. [Google Play API setup](https://developers.google.com/android-publisher/getting_started)
+
+`nsgo publish` authenticates to Google Play using:
+
+1. **`NSGO_PLAY_SERVICE_ACCOUNT`** (takes precedence when set): the service account's JSON key text or the path to its key file.
+2. **Application Default Credentials (ADC)** (used when `NSGO_PLAY_SERVICE_ACCOUNT` is unset, requesting the `https://www.googleapis.com/auth/androidpublisher` scope):
+   - **Local development (keyless)**: impersonate the publishing service account with `gcloud auth application-default login --impersonate-service-account=<service-account>` (grant your user `roles/iam.serviceAccountTokenCreator` on that service account; gcloud's default OAuth client does not grant the `androidpublisher` scope directly, so impersonation is the recommended keyless path).
+   - **GitHub Actions and CI (keyless)**: configure Workload Identity Federation with `google-github-actions/auth`, which writes an `external_account` file and sets `GOOGLE_APPLICATION_CREDENTIALS`.
+   - **Other Google Cloud environments**: `GOOGLE_APPLICATION_CREDENTIALS`, the gcloud ADC file, or the GCE/Cloud Run metadata server.
+
+The command prints the credential type and account email it used (never any secret) and, on an HTTP 401 or 403 from Google Play, reports which identity was refused so you can grant it access in Play Console › Users and permissions.
 
 ```sh
 nsgo build -target android -channel store
@@ -413,7 +480,7 @@ nsgo publish -store play -track production        # also update release notes on
 
 Validation runs before reading credentials or making any HTTP request, checking required fields, locale codes, URL schemes, media files and counts (up to 10 screenshots and 3 previews per App Store display type; up to 8 screenshots per Google Play image type), and character limits (App Store: title 30, subtitle 30, keywords 100, promotional text 170, description 4000, release notes 4000; Google Play: title 30, short description 80, description 4000, release notes 500).
 
-Upload credentials come from the environment alone: `NSGO_APP_STORE_KEY`, `NSGO_APP_STORE_KEY_ID` and `NSGO_APP_STORE_ISSUER` (falling back to the notarization key `NSGO_NOTARY_KEY`, `NSGO_NOTARY_KEY_ID` and `NSGO_NOTARY_ISSUER`) for App Store Connect, and `NSGO_PLAY_SERVICE_ACCOUNT` (service-account JSON file path or JSON text) for Google Play.
+Upload credentials come from the environment or Google Application Default Credentials: `NSGO_APP_STORE_KEY`, `NSGO_APP_STORE_KEY_ID` and `NSGO_APP_STORE_ISSUER` (falling back to the notarization key `NSGO_NOTARY_KEY`, `NSGO_NOTARY_KEY_ID` and `NSGO_NOTARY_ISSUER`) for App Store Connect, and `NSGO_PLAY_SERVICE_ACCOUNT` (service-account JSON file path or JSON text, taking precedence) or Application Default Credentials (`gcloud auth application-default login --impersonate-service-account=…`, `GOOGLE_APPLICATION_CREDENTIALS`, Workload Identity Federation, or GCE metadata) for Google Play.
 
 ### Store compliance
 
@@ -681,7 +748,7 @@ Each target writes a project for its platform's developer tool, also in `dist/re
 
 `miniprogram.appid` gives the mini program's AppID on each platform (`wechat`, `qq`, `alipay`, `douyin`); without one, WeChat DevTools previews it with its tourist AppID and the other tools ask for one. On WeChat, `-run` and each `dev` rebuild close and auto-open the project through the CLI, so DevTools compiles the fresh files. This was checked with DevTools 2.01.2510290. The platform's navigation bar shows the app's title; with `custom_navigation`, the app fills the page and its safe area keeps it clear of the menu button. Set `miniprogram.wechat_speech_plugin` to a plugin version (such as `"0.3.5"`) to declare WeChat's official `WechatSI` text-to-speech plugin (`wx069ba97219f66d99`) in WeChat's `app.json` after enabling it in the WeChat MP console. The app reads the phone's OS with `Env.Simulated` true, as on the web with `--nsgo-os`: a stack's pages show their own `Header`, as no system header replaces it. QQ, Alipay and Douyin have not been tried in their tools yet, and Alipay does not yet take back through the app, keyframes or the keyboard's height.
 
-Mini programs are experimental. A mini program runs Go apps alone, not TSX, and the platforms hold the app's compressed module to 2 MB: an app of a few screens on `base` fits, as `examples/gallery-miniprogram` does, one of `ui`'s controls does not yet, and `build` says when one does not. Shaders draw nothing there, and web views and native components are not shown yet; app font files (`loadFontFace`), tinted images, off-baseline inline attachments, selection areas and `<video>` playback are wired across all four platforms' templates though still unchecked in vendor DevTools.
+Mini programs are experimental. A mini program runs Go apps alone: `build` refuses apps that link `tsx` (and `tsx` entry points built with `nsgominiprogram` fail with `tsx.ErrUnsupported`), and the platforms hold the app's compressed module to 2 MB — an app of a few screens on `base` fits, as `examples/gallery-miniprogram` does, one of `ui`'s controls does not yet, and `build` says when one does not. Web views (`<web-view>` fills a page of its own), custom native components and shaders (`nsgo_noshader`) are unavailable and report `errors.ErrUnsupported` (`core.CodeUnavailable`); app font files (`loadFontFace`), tinted images, off-baseline inline attachments, selection areas and `<video>` playback are wired across all four platforms' templates though still unchecked in vendor DevTools.
 
 ## HarmonyOS
 
@@ -715,15 +782,19 @@ Paths are relative to `nsgo.yaml`. Set `NSGO_HARMONY_KEYSTORE_PASSWORD` and `NSG
 ```yaml
 sign:
   identity: "Apple Development: you@example.com (ABCDE12345)"  # signs the macOS app, else ad hoc
-  profile: assets/AppStore.mobileprovision  # signs the IPA
+  profile: assets/AppStore.mobileprovision  # signs the iOS, tvOS or watchOS stub IPA
   keystore: assets/release.p12              # signs APKs, with key_alias
   certificate: assets/codesign.pfx          # signs the Windows app and its installer
+  # watch_profile: assets/Watch.mobileprovision      # signs <id>.watchkitapp inside a watch-only IPA (optional with a wildcard profile)
   # widgets_profile: assets/Widgets.mobileprovision  # the iOS extension's profile; use a macOS profile for a Mac App Store build
   # share_profile: assets/Share.mobileprovision      # signs the IPA's share extension
   # clip_profile: assets/Clip.mobileprovision        # signs the IPA's App Clip
+  # quicklook_profile: assets/QuickLook.provisionprofile  # signs the Mac App Store QuickLook preview extension
 ```
 
-The keystore's passwords come from `NSGO_KEYSTORE_PASSWORD` and `NSGO_KEY_PASSWORD`. `-team` signs the iPhone's package. `-profile`, `-widgets-profile`, `-share-profile`, `-clip-profile` and `-macos-profile` replace the app's, the widget extension's, the share extension's, the App Clip's and the Mac App Store's provisioning profiles from the command line. `-installer` replaces the Mac Installer Distribution identity.
+The keystore's passwords come from `NSGO_KEYSTORE_PASSWORD` and `NSGO_KEY_PASSWORD`. `-team` signs the iPhone's package. `-profile`, `-watch-profile`, `-widgets-profile`, `-share-profile`, `-clip-profile`, `-quicklook-profile` and `-macos-profile` replace the app's, the watch app's, the widget extension's, the share extension's, the App Clip's, the Mac App Store QuickLook extension's and the Mac App Store's provisioning profiles from the command line. `-installer` replaces the Mac Installer Distribution identity.
+
+For `-target watchos`, `nsgo build` keeps the standalone `<name>.app` for `-run` device installs and writes `<name>.ipa` (copied to `dist/releases` as `<slug>-<version>-watchos.ipa`) containing Xcode's watch-only iOS stub (`ITSWatchOnlyContainer`), the nested watchOS app (`<id>.watchkitapp`) and `WatchKitSupport2/WK`. For App Store Connect, set `sign.profile` for `<id>` and `sign.watch_profile` for `<id>.watchkitapp` from the same team (or a single wildcard `sign.profile` covering both); the build validates both profiles and signs inside-out.
 
 ### Sign Windows packages
 
@@ -765,6 +836,19 @@ sign:
 ## Widgets and Live Activities
 
 `build` and `dev` compile the extension that draws the app's widgets and Live Activities into the macOS and iOS packages with Xcode's Swift compiler, with no separate step. On iOS the app and its widgets share an app group: `-run` on an iPhone has Xcode sign both and register the group; for an IPA, enable it for both `<id>` and `<id>.widgets`, and sign the extension with `sign.widgets_profile`. Android standalone APKs and AABs include App Widget providers and resources from `widgets`; the prebuilt Java runtime draws their timelines with no SDK or Java compiler needed by app builds. Android 16 shows Live Activities as Live Updates, which need no extension. [Widgets](widgets.md) and [Live Activities](live-activities.md) cover their configuration and API.
+
+## QuickLook previews
+
+On macOS, `quicklook` embeds a QuickLook Preview Extension (`Contents/PlugIns/QuickLookPreview.appex`) so Finder previews the app's documents with an NSGo view:
+
+```yaml
+quicklook:
+  main: ./cmd/quicklook      # Go main package calling nsgo.RunQuickLook
+  # id: dev.example.app.quicklook  # <id>.quicklook by default
+  # types: [dev.example.app.doc]   # defaults to all UTIs declared in file_types
+```
+
+The entry package calls `nsgo.RunQuickLook(Preview)` (accepting `nsgo.WindowSize` for the preview's preferred content size, `nsgo.Fonts`, `nsgo.Appearance`, `nsgo.Component`, `nsgo.DataDir` and `nsgo.OnError`). `Preview` receives the selected file's path directly, and `"path"` and `"url"` are also available in `cx.HostParams()`. macOS runs the extension inside App Sandbox with read access granted only to the selected file URL. `build` signs the `.appex` with `com.apple.security.app-sandbox` before signing the app — ad hoc for local builds and `dev` (which registers it with `pluginkit -a`), with `sign.identity` and hardened runtime/timestamp when notarizing, and with `sign.quicklook_profile` (`-quicklook-profile`) from the same team for provisioned Mac App Store builds — and `macos_universal` joins its binary with `lipo`.
 
 ## Android App Links
 

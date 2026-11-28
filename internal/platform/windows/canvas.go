@@ -1050,8 +1050,9 @@ func plainLayout(text string, font driver.Font) *comObject {
 		format.ptr(), f32(unbounded), f32(unbounded), uintptr(unsafe.Pointer(&layout)))) {
 		return nil
 	}
-	if t := typography(font.Variant); t != nil {
+	if t := typography(font); t != nil {
 		layout.callRange(layoutSetTypography, 0, 0, uint32(len(units)), t.ptr())
+		t.release()
 	}
 	return layout
 }
@@ -1095,7 +1096,7 @@ func (c *canvasPlayer) image(op *driver.DrawOp) {
 		})
 		return
 	}
-	s := c.p.w.canvasImage(*imgSrc)
+	s := c.p.canvasImage(*imgSrc)
 	if s == nil || s.pic == nil {
 		c.waited = c.waited || (s != nil && s.load != nil)
 		return

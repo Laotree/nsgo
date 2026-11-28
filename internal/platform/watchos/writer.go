@@ -31,6 +31,8 @@ const (
 	opAuthSession
 	opPermission
 	opStickyCells
+	opRetire
+	opCrown
 )
 
 // writer writes ops as the host's Reader reads them: little-endian
@@ -66,4 +68,9 @@ func (w *writer) f64(vs ...float64) {
 func (w *writer) str(s string) {
 	w.buf = binary.LittleEndian.AppendUint32(w.buf, uint32(len(s)))
 	w.buf = append(w.buf, s...)
+}
+
+func (w *writer) crown(mode uint8) {
+	w.byte(opCrown)
+	w.byte(mode)
 }

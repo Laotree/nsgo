@@ -58,7 +58,7 @@ func TestMain(m *testing.M) {
 
 `app.PressWith("id:row", core.Modifiers{Shift: true})` 为一次点击按住修饰键；`PressAtWith(selector, core.Point{X: 20, Y: 10}, mods)` 点击视图中的指定点。`Shift`、`Control`、`Alt` 和 `Platform`（Apple 上为 Command，其他平台为 Windows/Super 键）会通过无头模型和目标的原生输入传给 `OnPressDown`、`OnPressUp` 和 `OnPress`。仍遵循平台的原生约定：例如 macOS 上的 Chrome 会将 Control-click 转为上下文菜单。之后的 `Press` 或 `PressAt` 不带修饰键。watchOS 没有键盘修饰键输入，因此会拒绝带修饰键的点击。
 
-目标测试会将滚动内容中的控件移到原生栏未遮挡的位置，并遵循嵌套视口及各滚动轴。`PressAt` 的坐标是指定视图的视口内的点。无头模型和目标平台的测试模型在寻找点击目标、判断可见性和计算滚动范围时，都会计入滚动内容的缩放，包括嵌套缩放和小于 1 的比例。视图的 `Bounds()` 仍与 `Ref.Bounds` 一样，报告变换前的布局框。
+目标测试会将滚动内容中的控件移到原生栏未遮挡的位置，并遵循嵌套视口及各滚动轴。`app.ScrollIntoView(selector)`（以及 `Surface.ScrollIntoView`）滚动离匹配视图最近的滚动视图，使匹配视图完整进入计入内容内边距的可见视口（超出视口时对齐到最近边缘）；已在视口内时不滚动，没有可滚动祖先时失败。`PressAt` 的坐标是指定视图的视口内的点。无头模型和目标平台的测试模型在寻找点击目标、判断可见性和计算滚动范围时，都会计入滚动内容的缩放，包括嵌套缩放和小于 1 的比例。视图的 `Bounds()` 仍与 `Ref.Bounds` 一样，报告变换前的布局框；`WindowFrame()` 则返回计入滚动偏移、内容缩放和样式变换后的窗口坐标边界框。
 
 点击可以直接指定文本框。在无头测试和各个目标平台上，可以在点击返回后立即读取 `app.Find("id:field").Focused`，包括点击处理函数聚焦文本框的情况。
 
@@ -90,6 +90,14 @@ func TestMain(m *testing.M) {
 
 `app.NowPlaying()` 返回应用最后一次发布的系统媒体信息，清除后返回 nil。`app.MediaCommand(core.MediaCommand{Kind: core.MediaSeek, Position: 30 * time.Second})` 向当前发布发送命令，由仍然有效的处理函数接收。无界面测试用 `nsgotest.Environment(core.Environment{NowPlaying: true})` 启用此能力，也可以在 macOS 目标上测试。
 
+## 无窗口绘制
+
+在 macOS、Windows 和 Linux 上，`nsgotest.PlatformTextEngine()` 为无头测试提供宿主原生文本引擎的度量（CoreText、DirectWrite 或 Pango）。通过 `nsgotest.TextEngine` 传入；其他目标（或未安装 Pango 和 Cairo 的 Linux 环境）返回 nil，测试模型保持近似度量。启动应用前用 `nsgotest.RegisterFont` 注册字体字节。
+
+`nsgotest.Render(app.Find("id:score").Drawing, core.Size{Width: 600, Height: 800}, 2)` 在不打开窗口的情况下把记录的画布重放为独立的 `*image.RGBA`，可直接用 `image/png` 编码或比对像素。尺寸单位为点，缩放为每点像素数，透明输出上限为 16 Mi 像素，两者都必须为有限正数。图片同步加载（上限 30 秒），动图取第一帧，失败时返回错误；渲染前需已解析动画槽和视图画笔。
+
+在支持无窗口播放器的宿主上，无头测试默认启用 `Env.CanRenderDrawings()`，并将 `Scope.RenderDrawing` 委托给 `nsgotest.Render`（或在设置后调用 `app.RenderDrawing`）。其他目标返回 `nsgotest.ErrNoPlayer`；目标平台上的 `Screenshot` 仍可独立使用。
+
 `View.Style` 记录 `nsgotest.ViewStyle`，`View.Animated` 记录 `nsgotest.AnimatedValues`。`app.Animated(selector)` 将绑定值应用到记录的基础样式。`app.CanvasScale(selector)` 返回画布绘制时每点的像素数：像素比乘以它外面的缩放和变换的光栅档位，再乘以它的 `ResolutionScale`；`View.ResolutionScale` 和 `CanvasSampling` 记录后两者。效果和自定义光标保留其应用值标识；`Radii`、`Rounded`、`Rim` 和 `Matrix` 保持原有几何策略。
 
 `app.Find(selector).Kind` 的类型是 `nsgotest.ViewKind`。需要检查挂载视图的形式时，可将它与 `nsgotest.KindText`、`KindInput`、`KindCanvas` 或 `KindGPU` 等常量比较。
@@ -100,7 +108,7 @@ func TestMain(m *testing.M) {
 
 `nsgotest.UpdaterState(core.UpdaterState{...})` 可在第一次渲染前设置更新器的能力和偏好，适用于无窗口测试及原生目标。通过 `app.Update` 提供每次检查的结果；偏好变更由测试模型处理，不访问更新源。
 
-无头测试通过 `app.EditMenu` 和 `app.EditMenuItems()` 检查编辑菜单，用 `app.ChooseEditAction(core.EditCopy)` 选择已提供的操作，用 `app.CloseEditMenu()` 关闭菜单；粘贴使用测试的剪贴板。`app.LongPressAt(selector, point)` 长按指定位置；无头测试中，`app.Touch(selector, point).Hold(duration)` 会在手指抬起之前触发长按，随后可用 `Move` 测试选区扫动。这些菜单记录和操作选择检查模型行为，系统工具栏仍需原生验收。
+无头测试通过 `app.EditMenu` 和 `app.EditMenuItems()` 检查编辑菜单，用 `app.ChooseEditAction(core.EditCopy)` 选择已提供的操作，用 `app.CloseEditMenu()` 关闭菜单；粘贴使用测试的剪贴板。`app.LongPressAt(selector, point)` 长按指定位置；无头测试中，`app.Touch(selector, point).Hold(duration)` 会在手指抬起之前触发长按，随后可用 `Move` 测试选区扫动。每次调用 `app.Touch(selector, point)` 都会分配递增的唯一 `Finger.ID()`，上报指针输入模态，并在 `Lift`、`LiftAt` 或 `Cancel` 之前与其他按住的手指并存；每次触摸事件都会列出当前所有按住的手指，只对发生变化的那根手指设置 `Changed`。这些菜单记录和操作选择检查模型行为，系统工具栏仍需原生验收。
 
 `View.Props` 是 `nsgotest.ViewProps` 快照，记录视图标识、无障碍名称和状态、操作，以及焦点和指针设置。`HelpText`、`HasAction`、`ActionList` 和 `FocusStop` 提供对应策略；标签 ID、操作列表和涟漪设置会从挂载值复制。
 

@@ -122,7 +122,9 @@ const (
 	// text it commits.
 	EventCompositionChange
 	// EventAccessibilityAction is an action assistive technology
-	// performed on ID, by name (Text).
+	// performed on ID, by name (Text). For a canvas node action,
+	// CanvasNode names the node's ID (and Value/HasValue carry an
+	// optional target value).
 	EventAccessibilityAction
 	// EventRequestClose asks to close the modal ID for the reason Text
 	// ("swipe" for an iOS sheet); Finished says the platform closed it.
@@ -190,7 +192,7 @@ const (
 	// installed the package or Android opened the installer,
 	// ItemCanInstallPackages Count with whether the
 	// app may install packages and ItemInstallSettings Count with whether
-	// the setting opened (all Finished). ItemCapture returns the PNG in Data ([]byte); Text is what failed.
+	// the setting opened (all Finished). ItemCapture returns the PNG in Data ([]byte), and ItemRenderDrawing returns the rendered *image.RGBA in Data; Text is what failed.
 	EventFiles
 	// EventModalShown and EventModalDismissed report that the platform
 	// finished presenting modal ID and taking it away, where it says so.
@@ -424,6 +426,11 @@ type Event struct {
 	// Delta and Precise are a wheel's (EventWheel).
 	Delta   Point
 	Precise bool
+	// CanvasNode is the target CanvasNode's ID for EventAccessibilityAction
+	// on a canvas view; empty for actions on the view itself. HasValue is
+	// set when Value carries an explicit target value for the action.
+	CanvasNode string
+	HasValue   bool
 }
 
 // Mergeable reports whether a later event of the same kind and view

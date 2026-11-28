@@ -19,7 +19,7 @@ nsgo build
 | --- | --- |
 | `*.dmg`、`*-setup.exe`、`*.deb`、`*.pkg.tar.gz`、`*.AppImage` | macOS、Windows 和 Linux 的[安装程序](#安装程序) |
 | `*.AppImage.zsync` | AppImageUpdate 和兼容启动器使用的差量更新控制文件 |
-| `*-ios.ipa`、`*-tvos.ipa`、`*.apk` | iOS、tvOS 和 Android 的包，用于商店或设备 |
+| `*-ios.ipa`、`*-tvos.ipa`、`*-watchos.ipa`、`*.apk` | iOS、tvOS、watchOS 和 Android 的包，用于商店或设备 |
 | `*.pkg`、`*.msix`、`*.aab`、`*.flatpak`、`*.tar.gz` 和 `flatpak/` | `store` 构建的[商店包](#商店包) |
 | `install.sh`、`install.ps1` | 从 [GitHub Releases](#发布到-github) 安装应用的脚本 |
 | `appcast-<目标>.xml` | [自动更新](#自动更新)的应用读取的更新源 |
@@ -27,7 +27,7 @@ nsgo build
 | `*-web.zip` | 网站，解压后原样部署即可 |
 | `miniprogram/<平台>/` | 各小程序的项目，用对应开发者工具上传 |
 
-每个文件都命名为 `<name>-<version>-<系统>-<架构>`，例如 `hello-1.2.0-windows-x64-setup.exe`，方便用户在 Release 页面找到自己系统的文件；每个文件旁都有 `.sha256`。构建其他版本时会先清空该目录；同一版本的构建（包括在其他机器上的）会往里追加。模拟器和 watchOS 的包留在各自的 `dist/<name>-<version>-<target>` 目录中。
+每个文件都命名为 `<name>-<version>-<系统>-<架构>`，例如 `hello-1.2.0-windows-x64-setup.exe`，方便用户在 Release 页面找到自己系统的文件；每个文件旁都有 `.sha256`。构建其他版本时会先清空该目录；同一版本的构建（包括在其他机器上的）会往里追加。模拟器的包留在各自的 `dist/<name>-<version>-<target>` 目录中。
 
 比原始模块更小时，网站会包含 `.wasm.br` 和 `.wasm.gz`。在支持预压缩的服务器上启用它，从原有的 `.wasm` URL 提供压缩模块，并设置 `Content-Type: application/wasm`、相应的 `Content-Encoding` 和 `Vary: Accept-Encoding`。原始模块可以部署到任何静态服务器。
 
@@ -102,6 +102,7 @@ build:
 # release: { github: me/hello }  # 安装脚本和自动更新从其 Releases 安装的 GitHub 仓库，省略时取 Git 远程 origin 的；tag_prefix 默认为 v
 # updates: { key: <公钥> }  # 应用按平台和渠道更新的方式，见“自动更新”
 # store: { dir: store }     # 商店列表目录（按语言存放的 YAML 和 Markdown）
+# registries: { "@acme": https://nsgo.acme.example/registry.yaml, "@team": tools/registry.yaml }  # 供 nsgo add @名称/条目 使用的自定义注册表
 # miniprogram: { appid: { wechat: wx0123456789abcdef, alipay: "2021000000000000" }, custom_navigation: false }  # 小程序的设置
 ```
 
@@ -210,6 +211,62 @@ Apply these changes? [y/N]
 
 `add` 是 NSGo 0.3.4 之后新增的。在固定为 0.3.4 或更早正式版本的模块中，已安装的 `nsgo` 不会为它运行[模块的 nsgo](#模块的-nsgo)，而是打印引入 `add` 的 `go get github.com/nsgo-dev/nsgo@<版本>`；在那里，`go tool nsgo add` 运行的是固定的 nsgo，它不认识 `add`。
 
+### 自定义注册表
+
+团队可以在 `nsgo.yaml` 的 `registries:` 下为自己的库和分支命名，同时不会覆盖 NSGo 自己的短名：
+
+```yaml
+registries:
+  "@acme": https://nsgo.acme.example/registry.yaml
+  "@team": tools/registry.yaml
+```
+
+每个键都是 `@` 加上 1 到 64 个小写字母、数字或连字符（不能以 `-` 开头或结尾，`@nsgo` 为保留名）。每个值都是不带用户凭据、查询参数和片段的 `https` URL（仅回环主机允许 `http`），或相对于 `nsgo.yaml` 的路径。未知字段和非法条目都会带行号报错，`nsgo` 也绝不会自行把未配置的注册表写入 `nsgo.yaml`。
+
+```sh
+nsgo add @acme/chart                 # 通过 @acme 解析 chart；不带前缀的短名不会查找自定义注册表
+nsgo add @acme/chart@v1.3.0          # 指定版本
+nsgo add -list                       # 列出 NSGo 内置索引及所有已配置注册表的条目（自定义条目带 @前缀）
+nsgo add -list @acme charts          # 按注册表前缀和关键词（名称、描述、标签）筛选
+```
+
+注册表文件是单个不超过 4 MiB 的严格 YAML 文档，包含 `version: 1` 和 `items` 列表（`name`、`module`、可选 `component`、可选标签 `version`、单行 `description`、SPDX `license`、可选 `https` `homepage` 以及可选小写 `tags`），禁止锚点、别名、合并键、控制字符和 Unicode 格式字符。远程注册表最多跟随 10 次重定向（拒绝重定向到明文 HTTP 或非回环 HTTP），连接超时 30 秒、总超时 5 分钟，并带 ETag 原子缓存到 `<用户缓存目录>/nsgo/registries/<sha256>.yaml`。离线时 `nsgo add` 会复用缓存副本，并在计划第一行与注册表和 URL 一起显示缓存时长；没有缓存副本时，错误信息会指明 URL。私有注册表可使用仓库内的文件或内网服务器，私有 Go 模块继续沿用 `GOPRIVATE` 和 `GOAUTH`。
+
+`nsgo add` 也可以复制模块在 `nsgo-module.yaml` 中声明的组件（`nsgo add [-diff] [-dir D] [-tests=false] name|@registry/name|module[@version]#component`），重写其导入路径、生成多语言目录、检查许可证并在 `nsgo-copy.yaml` 中记录来源。详见[复制组件](copying-components.md)。
+
+## 移除库
+
+当模块中不再有任何包导入某个库时，用 `nsgo remove` 移除它。它接受 NSGo 内置索引中的短名、`nsgo.yaml` 的 `registries` 中的 `@注册表/名称` 或 Go 模块路径，写入前会在 `go.mod` 和 `go.sum` 的副本上预览 `go mod tidy`：
+
+```sh
+nsgo remove media                           # 从 NSGo 内置索引解析短名
+nsgo remove @acme/chart                     # 通过已配置的自定义注册表解析名称
+nsgo remove github.com/acme/chart           # 展示 go mod tidy 将移除的内容，询问后再写入
+nsgo remove -dry-run github.com/acme/chart  # 只打印计划，什么也不写
+nsgo remove -y github.com/acme/chart        # 不经询问直接应用计划
+```
+
+```text
+github.com/acme/chart
+  module     remove github.com/acme/chart v1.3.0
+
+example.com/hello
+  go.mod     - require github.com/acme/chart v1.3.0
+             - require example.com/units v1.0.0
+             - require example.com/stray v0.1.0, also tidied
+  go.sum     - 6 lines
+Apply these changes? [y/N]
+```
+
+在运行 `go mod tidy` 之前，`remove` 用 `go mod why -m`（覆盖所有构建标签，包括 `_ios.go` 和测试文件）检查导入；只要模块中还有包直接导入该库，就拒绝并指出该包。解析为已复制组件的名字也会在规划前被拒绝。使用自定义注册表时，计划第一行会与 `add` 一样显示 `registry @<名称> (<来源>)`。
+
+`remove` 在与 `add` 相同的环境（`GOTOOLCHAIN=local`、`GOWORK=off` 和仅经由代理的 `GOPROXY`）中运行 `go mod tidy`，绝不降低其他模块的版本；添加该库时被提高的版本会保留，最终结果与 `go mod tidy` 写出的一致。计划中会标明：
+
+- 与所移除库及其连带移除的依赖无关的行标为 `also tidied`；
+- 因其他依赖仍需要或 `go.mod` 声明了其 `tool` 而保留的库会说明原因；
+- `go.mod` 中针对该库的 `replace` 会注明原样保留。
+
+确认提示、`-dry-run`、`-y`、无终端运行、中断恢复、原子写入以及 `go mod vendor` 提示均与 `add` 相同。`remove` 同样是 NSGo 0.3.4 之后新增的。
 ## 来自 Go 包的库
 
 桌面应用构建和目标测试对应用代码使用 `CGO_ENABLED=0`，NSGo 自身也遵循这一规则。应用包若含有 cgo 文件，构建会列出这些文件并停止，不会静默丢弃它们。原生库请使用 purego 和 `nsgo-natives.yaml`。
@@ -315,7 +372,17 @@ iOS、tvOS 和 watchOS 的设备构建会在应用及其扩展中写入 App Stor
 
 ### 发布到 Google Play
 
-启用 Google Play Developer API，并授予服务账号向目标轨道发布此应用的权限。将 `NSGO_PLAY_SERVICE_ACCOUNT` 设为服务账号的 JSON 密钥内容或密钥文件路径。[Google Play API 设置](https://developers.google.com/android-publisher/getting_started)
+启用 Google Play Developer API，并在 Play Console › 用户和权限 中授予服务账号（或用户账号）发布此应用的权限。[Google Play API 设置](https://developers.google.com/android-publisher/getting_started)
+
+`nsgo publish` 按以下顺序向 Google Play 进行身份验证：
+
+1. **`NSGO_PLAY_SERVICE_ACCOUNT`**（设置时优先）：服务账号的 JSON 密钥内容或密钥文件路径。
+2. **Application Default Credentials (ADC)**（未设置 `NSGO_PLAY_SERVICE_ACCOUNT` 时自动回退，使用 `https://www.googleapis.com/auth/androidpublisher` 作用域）：
+   - **本地开发（无需密钥文件）**：运行 `gcloud auth application-default login --impersonate-service-account=<服务账号>` 模拟发布服务账号（需在 Google Cloud 中向你的账号授予该服务账号的 `roles/iam.serviceAccountTokenCreator` 角色；gcloud 默认 OAuth 客户端不能直接请求 `androidpublisher` 作用域，因此推荐使用服务账号模拟）。
+   - **GitHub Actions 与 CI（无需密钥文件）**：通过 `google-github-actions/auth` 配置工作负载身份联合（Workload Identity Federation），它会自动生成 `external_account` 配置并设置 `GOOGLE_APPLICATION_CREDENTIALS`。
+   - **其他 Google Cloud 环境**：`GOOGLE_APPLICATION_CREDENTIALS`、gcloud ADC 文件，或 GCE/Cloud Run 元数据服务器。
+
+命令会输出所用凭据的类型和账号邮箱（绝不包含任何密钥）；当 Google Play 返回 HTTP 401 或 403 时，错误信息会指明被拒绝的身份，并提示在 Play Console › 用户和权限 中为其授予应用权限。
 
 ```sh
 nsgo build -target android -channel store
@@ -354,7 +421,7 @@ nsgo publish -store play -track production        # 同时更新指定 Google Pl
 
 校验会在读取凭据或发起任何 HTTP 请求之前完成，检查必填项、语言代码、URL 协议、媒体文件及数量（App Store 每种显示类型最多 10 张截图、3 段预览；Google Play 每种图片类型最多 8 张截图）以及字符上限（App Store：标题 30、副标题 30、关键词 100、宣传文本 170、描述 4000、更新说明 4000；Google Play：标题 30、简短描述 80、完整描述 4000、更新说明 500）。
 
-上传凭据仅从环境变量读取：App Store Connect 读取 `NSGO_APP_STORE_KEY`、`NSGO_APP_STORE_KEY_ID` 和 `NSGO_APP_STORE_ISSUER`（未设置时回退到公证密钥 `NSGO_NOTARY_KEY`、`NSGO_NOTARY_KEY_ID` 和 `NSGO_NOTARY_ISSUER`）；Google Play 读取 `NSGO_PLAY_SERVICE_ACCOUNT`（服务账号 JSON 文件路径或 JSON 文本）。
+上传凭据来自环境变量或 Google Application Default Credentials：App Store Connect 读取 `NSGO_APP_STORE_KEY`、`NSGO_APP_STORE_KEY_ID` 和 `NSGO_APP_STORE_ISSUER`（未设置时回退到公证密钥 `NSGO_NOTARY_KEY`、`NSGO_NOTARY_KEY_ID` 和 `NSGO_NOTARY_ISSUER`）；Google Play 优先读取 `NSGO_PLAY_SERVICE_ACCOUNT`（服务账号 JSON 文件路径或 JSON 文本），未设置时回退到 Application Default Credentials（`gcloud auth application-default login --impersonate-service-account=…`、`GOOGLE_APPLICATION_CREDENTIALS`、工作负载身份联合或 GCE 元数据）。
 
 ### 商店合规
 
@@ -592,7 +659,7 @@ nsgo dev -target miniprogram_alipay
 
 `miniprogram.appid` 按平台（`wechat`、`qq`、`alipay`、`douyin`）设置小程序的 AppID；没有时微信开发者工具以测试号预览，其他工具会要求填写。微信的 `-run` 和 `dev` 每次重新构建都会通过 CLI 关闭并自动打开项目，因此开发者工具会编译最新文件。此流程已用 2.01.2510290 版开发者工具检查。平台的导航栏显示应用的标题；开启 `custom_navigation` 后应用占满页面，安全区让它避开右上角的胶囊按钮。在微信公众平台启用官方「微信同声传译」插件（`wx069ba97219f66d99`）后，可将 `miniprogram.wechat_speech_plugin` 设为插件版本（例如 `"0.3.5"`），在微信的 `app.json` 中声明该插件以启用 `Speak`。应用读到的是手机的操作系统，`Env.Simulated` 为 true，与网页的 `--nsgo-os` 相同：导航栈的页面显示自己的 `Header`，没有系统标题栏代替它。QQ、支付宝和抖音尚未在各自的工具中试过；支付宝暂不支持由应用处理返回、关键帧动画和键盘高度。
 
-小程序为试验性支持。小程序只运行 Go 应用，不运行 TSX，且各平台把应用压缩后的模块限制在 2 MB 以内：基于 `base` 的几个页面的应用放得下，`examples/gallery-miniprogram` 就是一例，用 `ui` 控件的应用暂时放不下，放不下时 `build` 会说明。着色器在小程序中不绘制，网页视图和原生组件暂不显示；应用自带字体文件（`loadFontFace`）、`TintColor` 着色图片、偏离基线的行内视图、文本选区与 `<video>` 视频播放已接入四个平台的模板，但尚未在各平台开发者工具中实测。
+小程序为试验性支持。小程序只运行 Go 应用：`build` 会拒绝链接了 `tsx` 的应用（在 `nsgominiprogram` 构建中 `tsx` 入口也会返回 `tsx.ErrUnsupported`），且各平台把应用压缩后的模块限制在 2 MB 以内：基于 `base` 的几个页面的应用放得下，`examples/gallery-miniprogram` 就是一例，用 `ui` 控件的应用暂时放不下，放不下时 `build` 会说明。网页视图（`<web-view>` 必须占满整个页面）、自定义原生组件和着色器（`nsgo_noshader`）在小程序中不可用，会报告 `errors.ErrUnsupported`（`core.CodeUnavailable`）；应用自带字体文件（`loadFontFace`）、`TintColor` 着色图片、偏离基线的行内视图、文本选区与 `<video>` 视频播放已接入四个平台的模板，但尚未在各平台开发者工具中实测。
 
 ## 鸿蒙
 
@@ -626,15 +693,18 @@ harmonyos:
 ```yaml
 sign:
   identity: "Apple Development: you@example.com (ABCDE12345)"  # 为 macOS 应用签名，省略时为临时签名
-  profile: assets/AppStore.mobileprovision  # 为 IPA 签名
+  profile: assets/AppStore.mobileprovision  # 为 iOS、tvOS 或 watchOS 壳 IPA 签名
   keystore: assets/release.p12              # 与 key_alias 一起为 APK 签名
   certificate: assets/codesign.pfx          # 为 Windows 应用及其安装包签名
+  # watch_profile: assets/Watch.mobileprovision      # 为独立手表 IPA 中的 <id>.watchkitapp 签名（通配符描述文件时可省略）
   # widgets_profile: assets/Widgets.mobileprovision  # iOS 扩展的描述文件；Mac App Store 构建使用 macOS 描述文件
   # share_profile: assets/Share.mobileprovision      # 为 IPA 中的分享扩展签名
   # clip_profile: assets/Clip.mobileprovision        # 为 IPA 中的轻 App 签名
 ```
 
-密钥库的密码来自 `NSGO_KEYSTORE_PASSWORD` 和 `NSGO_KEY_PASSWORD`。`-team` 用于为 iPhone 包签名。命令行可用 `-profile`、`-widgets-profile`、`-share-profile`、`-clip-profile` 和 `-macos-profile` 替换应用、小组件扩展、分享扩展、轻 App 和 Mac App Store 的描述文件，`-installer` 替换 Mac Installer Distribution 身份。
+密钥库的密码来自 `NSGO_KEYSTORE_PASSWORD` 和 `NSGO_KEY_PASSWORD`。`-team` 用于为 iPhone 包签名。命令行可用 `-profile`、`-watch-profile`、`-widgets-profile`、`-share-profile`、`-clip-profile` 和 `-macos-profile` 替换应用、手表应用、小组件扩展、分享扩展、轻 App 和 Mac App Store 的描述文件，`-installer` 替换 Mac Installer Distribution 身份。
+
+对于 `-target watchos`，`nsgo build` 会保留用于 `-run` 真机安装的独立 `<name>.app`，同时写出 `<name>.ipa`（并复制到 `dist/releases/<slug>-<version>-watchos.ipa`），内含 Xcode 的 watch-only iOS 壳（`ITSWatchOnlyContainer`）、嵌套的手表应用（`<id>.watchkitapp`）和 `WatchKitSupport2/WK`。上传 App Store Connect 时，为 `<id>` 设置 `sign.profile` 并为 `<id>.watchkitapp` 设置同一团队的 `sign.watch_profile`（或使用同时覆盖两者的通配符 `sign.profile`），构建会校验两份描述文件并按由内向外的顺序签名。
 
 ### 为 Windows 包签名
 

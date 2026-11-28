@@ -1,6 +1,7 @@
 name: CodeQL
 
 # Static analysis of the Go code, the website's and the TSX runtime's JavaScript and TypeScript, and the workflows themselves. Whether its results block a merge is a ruleset's decision, not this file's.
+# A scan reads the whole checkout, so a language whose files the change does not touch only repeats its last result. Each language names the paths it reads and skips a change that matches none; Go, which most changes touch, always scans.
 on:
   push:
     branches:
@@ -41,27 +42,73 @@ jobs:
         include:
           - language: actions
             build-mode: none
+            paths: '^\.github/'
           - language: javascript-typescript
             build-mode: none
+            paths: '\.(js|mjs|cjs|jsx|ts|tsx)$|(^|/)(package\.json|bun\.lock|tsconfig[^/]*\.json)$'
           # Go has no buildless mode: autobuild compiles the module for Linux, which needs no cgo or system libraries, as the backends reach the system through purego.
+          # An empty path list scans every change.
           - language: go
             build-mode: autobuild
+            paths: ''
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The merge commit and its first parent, the base: their difference is what the pull request changes.
+          fetch-depth: 2
+      - name: Decide whether the change can affect ${{ matrix.language }}
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          PATHS: ${{ matrix.paths }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PATHS" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$EVENT" in
+            pull_request) base=HEAD^1 head=HEAD ;;
+            push)
+              base=$BEFORE head=$AFTER
+              # A multi-commit push can start before the shallow clone's history, and a scan that cannot see the change still runs.
+              if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+                echo "::warning::The clone holds no $base, so ${{ matrix.language }} scans this change."
+                echo "run=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi ;;
+            *)
+              # A schedule, a manual run and any other event scan every language.
+              echo "run=true" >> "$GITHUB_OUTPUT"
+              exit 0 ;;
+          esac
+          if ! changed=$(git diff --name-only --no-renames "$base" "$head"); then
+            echo "::warning::The changed files cannot be listed, so ${{ matrix.language }} scans this change."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if grep -Eq "$PATHS" <<< "$changed"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No changed file can affect ${{ matrix.language }}, so its scan is skipped."
+          fi
       - name: Set up Go
-        if: matrix.language == 'go'
+        if: matrix.language == 'go' && steps.scope.outputs.run == 'true'
         uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           cache: true
       - uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4
+        if: steps.scope.outputs.run == 'true'
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
       - name: Check whether the pull request still accepts results
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.scope.outputs.run == 'true'
         id: upload
         env:
           GH_TOKEN: ${{ github.token }}
@@ -80,6 +127,7 @@ jobs:
             *) echo "::error::Unexpected pull request state: $state"; exit 1 ;;
           esac
       - uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4
+        if: steps.scope.outputs.run == 'true'
         with:
           category: "/language:${{ matrix.language }}"
           upload: ${{ steps.upload.outputs.mode || 'always' }}
