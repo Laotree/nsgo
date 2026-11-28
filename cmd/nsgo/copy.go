@@ -203,35 +203,42 @@ func (m *addModule) downloadVerifiedModule(ctx context.Context, modPath, query s
 		return nil, fmt.Errorf("download %s@%s returned no zip archive", modPath, query)
 	}
 
-	mv := module.Version{Path: dl.Path, Version: dl.Version}
-	if _, err := modzip.CheckZip(mv, dl.Zip); err != nil {
-		return nil, fmt.Errorf("%s@%s: invalid module zip: %w", dl.Path, dl.Version, err)
+	return openAndVerifyModuleZip(dl.Path, dl.Version, dl.Zip, dl.Sum, appGoSum)
+}
+
+// openAndVerifyModuleZip validates zipPath with x/mod/zip.CheckZip and
+// dirhash.HashZip (against expectedSum and appGoSum) and opens it with parsed
+// go.mod and optional nsgo-module.yaml.
+func openAndVerifyModuleZip(modPath, version, zipPath, expectedSum string, appGoSum []byte) (*downloadedModule, error) {
+	mv := module.Version{Path: modPath, Version: version}
+	if _, err := modzip.CheckZip(mv, zipPath); err != nil {
+		return nil, fmt.Errorf("%s@%s: invalid module zip: %w", modPath, version, err)
 	}
 
-	actualHash, err := dirhash.HashZip(dl.Zip, dirhash.Hash1)
+	actualHash, err := dirhash.HashZip(zipPath, dirhash.Hash1)
 	if err != nil {
-		return nil, fmt.Errorf("%s@%s: hash zip: %w", dl.Path, dl.Version, err)
+		return nil, fmt.Errorf("%s@%s: hash zip: %w", modPath, version, err)
 	}
-	if dl.Sum != "" && actualHash != dl.Sum {
-		return nil, fmt.Errorf("%s@%s: zip hash mismatch: archive hashes to %s, download reported %s", dl.Path, dl.Version, actualHash, dl.Sum)
+	if expectedSum != "" && actualHash != expectedSum {
+		return nil, fmt.Errorf("%s@%s: zip hash mismatch: archive hashes to %s, download reported %s", modPath, version, actualHash, expectedSum)
 	}
-	if sumHash := goSumEntry(appGoSum, dl.Path, dl.Version); sumHash != "" && actualHash != sumHash {
-		return nil, fmt.Errorf("%s@%s: go.sum mismatch: archive hashes to %s, go.sum has %s", dl.Path, dl.Version, actualHash, sumHash)
+	if sumHash := goSumEntry(appGoSum, modPath, version); sumHash != "" && actualHash != sumHash {
+		return nil, fmt.Errorf("%s@%s: go.sum mismatch: archive hashes to %s, go.sum has %s", modPath, version, actualHash, sumHash)
 	}
 
-	zr, err := zip.OpenReader(dl.Zip)
+	zr, err := zip.OpenReader(zipPath)
 	if err != nil {
-		return nil, fmt.Errorf("%s@%s: open zip: %w", dl.Path, dl.Version, err)
+		return nil, fmt.Errorf("%s@%s: open zip: %w", modPath, version, err)
 	}
 	dm := &downloadedModule{
-		path:    dl.Path,
-		version: dl.Version,
-		zipPath: dl.Zip,
+		path:    modPath,
+		version: version,
+		zipPath: zipPath,
 		sum:     actualHash,
 		zr:      zr,
 		entries: make(map[string]*zip.File, len(zr.File)),
 	}
-	prefix := dl.Path + "@" + dl.Version + "/"
+	prefix := modPath + "@" + version + "/"
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
 			continue
@@ -248,37 +255,37 @@ func (m *addModule) downloadVerifiedModule(ctx context.Context, modPath, query s
 	goModRaw, err := dm.readFile("go.mod", maxModuleManifestBytes)
 	if err != nil {
 		dm.close()
-		return nil, fmt.Errorf("%s@%s: read go.mod from zip: %w", dl.Path, dl.Version, err)
+		return nil, fmt.Errorf("%s@%s: read go.mod from zip: %w", modPath, version, err)
 	}
 	mf, err := modfile.ParseLax("go.mod", goModRaw, nil)
 	if err != nil {
 		dm.close()
-		return nil, fmt.Errorf("%s@%s: parse go.mod: %w", dl.Path, dl.Version, err)
+		return nil, fmt.Errorf("%s@%s: parse go.mod: %w", modPath, version, err)
 	}
 	dm.goModRaw = goModRaw
 	dm.goMod = mf
 
-	if modSum := goSumEntry(appGoSum, dl.Path, dl.Version+"/go.mod"); modSum != "" {
+	if modSum := goSumEntry(appGoSum, modPath, version+"/go.mod"); modSum != "" {
 		actualModSum, err := dirhash.Hash1([]string{"go.mod"}, func(string) (io.ReadCloser, error) {
 			return io.NopCloser(bytes.NewReader(goModRaw)), nil
 		})
 		if err == nil && actualModSum != modSum {
 			dm.close()
-			return nil, fmt.Errorf("%s@%s: go.sum mismatch for go.mod: archive hashes to %s, go.sum has %s", dl.Path, dl.Version, actualModSum, modSum)
+			return nil, fmt.Errorf("%s@%s: go.sum mismatch for go.mod: archive hashes to %s, go.sum has %s", modPath, version, actualModSum, modSum)
 		}
 	}
 
 	if manifestRaw, err := dm.readFile(moduleManifestName, maxModuleManifestBytes); err == nil {
 		reqNSGo := requiredVersion(mf, nsgoModule)
-		manifest, err := parseModuleManifest(manifestRaw, dl.Path, reqNSGo, moduleManifestNSGoVersion())
+		manifest, err := parseModuleManifest(manifestRaw, modPath, reqNSGo, moduleManifestNSGoVersion())
 		if err != nil {
 			dm.close()
-			return nil, fmt.Errorf("%s@%s: %w", dl.Path, dl.Version, err)
+			return nil, fmt.Errorf("%s@%s: %w", modPath, version, err)
 		}
 		dm.manifest = manifest
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		dm.close()
-		return nil, fmt.Errorf("%s@%s: %w", dl.Path, dl.Version, err)
+		return nil, fmt.Errorf("%s@%s: %w", modPath, version, err)
 	}
 
 	return dm, nil
@@ -402,6 +409,28 @@ type plannedComponent struct {
 
 	extImports []string // external/non-component imports (after rewriting)
 	dm         *downloadedModule
+
+	// Update fields (set when updating an existing copy in place, #2469).
+	isUpdate          bool
+	isDowngrade       bool
+	fromVersion       string
+	existing          moduleCopy
+	baseUnavailable   string
+	existingRecordRaw []byte
+	existingFilesRaw  map[string][]byte
+	recordFiles       []string           // target version's non-generated files for nsgo-copy.yaml
+	resultingFiles    []copiedFile       // resulting directory contents after update (for catalogs/licenses/vet)
+	fileActions       []copyFileAction   // per-file planned update actions
+	genActions        []copyFileAction   // generated file write/delete actions
+	conflicts         []copyFileConflict // files both changed or case collisions (hard refusal)
+	flaggedDels       []string           // edited files dropped by author (flagged; refused under -y)
+}
+
+func (c *plannedComponent) effectiveFiles() []copiedFile {
+	if c.isUpdate {
+		return c.resultingFiles
+	}
+	return c.files
 }
 
 // copyPlan is the complete plan for copying one or more components.
@@ -486,13 +515,20 @@ func addCopyComponentsWithModule(ctx context.Context, m *addModule, o addOptions
 		return err
 	}
 	for _, c := range p.components {
-		done("copied %s (%s %s) → %s", c.compName, c.srcMod, c.srcVersion, c.destRel)
+		switch {
+		case c.isUpdate && c.isDowngrade:
+			done("downgraded %s (%s %s -> %s) in %s", c.compName, c.srcMod, c.fromVersion, c.srcVersion, c.destRel)
+		case c.isUpdate:
+			done("updated %s (%s %s -> %s) in %s", c.compName, c.srcMod, c.fromVersion, c.srcVersion, c.destRel)
+		default:
+			done("copied %s (%s %s) → %s", c.compName, c.srcMod, c.srcVersion, c.destRel)
+		}
 	}
 	if p.m.vendored() {
 		detail("next: go mod vendor")
 	}
 	for _, c := range p.components {
-		if c.explicit {
+		if c.explicit && !c.isUpdate {
 			detail("next: import %q", c.importPath)
 		}
 	}
@@ -525,6 +561,9 @@ func (p *copyPlan) refusal() error {
 	var reasons []string
 	reasons = append(reasons, p.refusals...)
 	for _, c := range p.components {
+		if msg := c.conflictRefusal(); msg != "" {
+			reasons = append(reasons, msg)
+		}
 		reasons = append(reasons, c.licenseRefusals...)
 	}
 	// Check NSGo moving to non-release (add's rule).
@@ -547,6 +586,9 @@ func (p *copyPlan) flagError() error {
 	for _, c := range p.components {
 		for _, f := range c.flags {
 			lines = append(lines, formatComponentFinding(c.destRel, f))
+		}
+		for _, del := range c.flaggedDels {
+			lines = append(lines, fmt.Sprintf("%s/%s: edited by the app and dropped in %s (deleting it will discard your edits)", c.destRel, del, c.srcVersion))
 		}
 	}
 	for _, vf := range p.vet.failures {
@@ -688,13 +730,20 @@ func (m *addModule) planCopy(ctx context.Context, o addOptions, reqs []addReques
 		}
 
 		// Check existing copy of this (module, component).
+		var (
+			existingCopy moduleCopy
+			isUpdate     bool
+			destAbs      string
+			destRel      string
+			compTests    = includeTests
+		)
 		if ec, exists := existingByKey[key]; exists {
 			if cur.explicitDir != "" {
-				destAbs, _, err := resolveCopyDestination(m.dir, m.cwd, app.componentsDir, cur.explicitDir, pkgName, true)
+				expAbs, _, err := resolveCopyDestination(m.dir, m.cwd, app.componentsDir, cur.explicitDir, pkgName, true)
 				if err != nil {
 					return nil, fmt.Errorf("add: %w", err)
 				}
-				if filepath.Clean(destAbs) != filepath.Clean(ec.dir) {
+				if filepath.Clean(expAbs) != filepath.Clean(ec.dir) {
 					return nil, fmt.Errorf("add: %s (%s) is already copied at %s; a second copy in the same module is not allowed", r.component, dm.path, ec.relDir)
 				}
 			}
@@ -704,20 +753,23 @@ func (m *addModule) planCopy(ctx context.Context, o addOptions, reqs []addReques
 				}
 				continue
 			}
-			nameForDiff := r.fromName
-			if nameForDiff == "" {
-				nameForDiff = r.component
+			isUpdate = true
+			existingCopy = ec
+			destAbs = ec.dir
+			destRel = ec.relDir
+			if !o.testsSet && !o.skipTests {
+				compTests = ec.record.Tests
 			}
-			return nil, fmt.Errorf("add: %s is already copied at %s (%s); updating an existing copy to %s is not supported yet (compare with %s diff %s@%s)", r.component, ec.relDir, ec.record.ModuleVersion, dm.version, nsgoCommand(), nameForDiff, dm.version)
-		}
-
-		// Determine and validate destination directory.
-		destAbs, destRel, err := resolveCopyDestination(m.dir, m.cwd, app.componentsDir, cur.explicitDir, pkgName, cur.explicitDir != "")
-		if err != nil {
-			return nil, fmt.Errorf("add: %w", err)
-		}
-		if err := validateCopyDestination(m.dir, destAbs, destRel, r.component, cur.explicit); err != nil {
-			return nil, fmt.Errorf("add: %w", err)
+		} else {
+			// Determine and validate destination directory for a new copy.
+			var err error
+			destAbs, destRel, err = resolveCopyDestination(m.dir, m.cwd, app.componentsDir, cur.explicitDir, pkgName, cur.explicitDir != "")
+			if err != nil {
+				return nil, fmt.Errorf("add: %w", err)
+			}
+			if err := validateCopyDestination(m.dir, destAbs, destRel, r.component, cur.explicit); err != nil {
+				return nil, fmt.Errorf("add: %w", err)
+			}
 		}
 		lowDest := strings.ToLower(destRel)
 		if prev, dup := claimedDestLower[lowDest]; dup {
@@ -726,7 +778,7 @@ func (m *addModule) planCopy(ctx context.Context, o addOptions, reqs []addReques
 		claimedDestLower[lowDest] = r.component
 
 		// Collect zip entries inside srcDir and validate against #2466 rules.
-		compFiles, zipRawFiles, err := collectComponentZipFiles(dm, srcDir, includeTests)
+		compFiles, zipRawFiles, err := collectComponentZipFiles(dm, srcDir, compTests)
 		if err != nil {
 			return nil, fmt.Errorf("add: %s#%s: %w", dm.path, r.component, err)
 		}
@@ -804,9 +856,15 @@ func (m *addModule) planCopy(ctx context.Context, o addOptions, reqs []addReques
 			destAbs:     destAbs,
 			destRel:     destRel,
 			importPath:  p.appModPath + "/" + destRel,
-			tests:       includeTests,
+			tests:       compTests,
 			flags:       ruleRes.Flags,
 			dm:          dm,
+			isUpdate:    isUpdate,
+		}
+		if isUpdate {
+			pc.existing = existingCopy
+			pc.fromVersion = existingCopy.record.ModuleVersion
+			pc.isDowngrade = semver.Compare(dm.version, existingCopy.record.ModuleVersion) < 0
 		}
 		pc.notes = dm.manifest.formattedNotes()
 
@@ -915,6 +973,14 @@ func (m *addModule) planCopy(ctx context.Context, o addOptions, reqs []addReques
 		for _, oldP := range slices.Sorted(maps.Keys(statsMap)) {
 			c.rewrites = append(c.rewrites, *statsMap[oldP])
 		}
+
+		if c.isUpdate {
+			if err := p.planComponentUpdate(ctx, downloads, existingCopies, c); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
 		c.extImports = slices.Sorted(maps.Keys(extSet))
 
 		// Classify licenses and apply app's license policy.
@@ -958,32 +1024,99 @@ func (m *addModule) planCopy(ctx context.Context, o addOptions, reqs []addReques
 	// resolving any external supplies with the planned go.mod through -overlay.
 	stage(ctx, "generating catalogs")
 	for _, c := range p.components {
+		genRel := "locales/" + genFile
 		if !hasComponentLocales(c) {
+			if c.isUpdate {
+				for _, oldGen := range c.existing.record.Generated {
+					if _, exists := c.existingFilesRaw[oldGen]; exists {
+						c.genActions = append(c.genActions, copyFileAction{
+							relPath:   oldGen,
+							kind:      copyActionDelete,
+							generated: true,
+						})
+					}
+				}
+			}
 			continue
 		}
 		genBytes, err := p.generateComponentCatalog(ctx, c)
 		if err != nil {
 			return nil, fmt.Errorf("add: %s: %w", c.destRel, err)
 		}
-		c.files = append(c.files, copiedFile{
-			relPath:   "locales/" + genFile,
-			data:      genBytes,
-			isLocale:  true,
-			generated: true,
-		})
-		slices.SortFunc(c.files, func(a, b copiedFile) int {
-			return cmp.Compare(a.relPath, b.relPath)
-		})
+		if c.isUpdate {
+			oldGenRaw, hadGen := c.existingFilesRaw[genRel]
+			crlf := hadGen && bytes.Contains(oldGenRaw, []byte("\r\n"))
+			writeGen := genBytes
+			if crlf {
+				writeGen = bytes.ReplaceAll(genBytes, []byte("\n"), []byte("\r\n"))
+			}
+			c.resultingFiles = append(c.resultingFiles, copiedFile{
+				relPath:   genRel,
+				data:      writeGen,
+				isLocale:  true,
+				generated: true,
+			})
+			slices.SortFunc(c.resultingFiles, func(a, b copiedFile) int {
+				return cmp.Compare(a.relPath, b.relPath)
+			})
+			if !hadGen {
+				c.genActions = append(c.genActions, copyFileAction{
+					relPath:   genRel,
+					kind:      copyActionAdd,
+					data:      writeGen,
+					generated: true,
+				})
+			} else if !bytes.Equal(oldGenRaw, writeGen) {
+				c.genActions = append(c.genActions, copyFileAction{
+					relPath:   genRel,
+					kind:      copyActionUpdate,
+					data:      writeGen,
+					crlf:      crlf,
+					generated: true,
+				})
+			}
+			for _, oldGen := range c.existing.record.Generated {
+				if oldGen == genRel {
+					continue
+				}
+				if _, exists := c.existingFilesRaw[oldGen]; exists {
+					c.genActions = append(c.genActions, copyFileAction{
+						relPath:   oldGen,
+						kind:      copyActionDelete,
+						generated: true,
+					})
+				}
+			}
+		} else {
+			c.files = append(c.files, copiedFile{
+				relPath:   genRel,
+				data:      genBytes,
+				isLocale:  true,
+				generated: true,
+			})
+			slices.SortFunc(c.files, func(a, b copiedFile) int {
+				return cmp.Compare(a.relPath, b.relPath)
+			})
+		}
 	}
 
 	// Build each component's deterministic nsgo-copy.yaml record.
 	for _, c := range p.components {
 		var recFiles, recGen []string
-		for _, f := range c.files {
-			if f.generated {
-				recGen = append(recGen, f.relPath)
-			} else {
-				recFiles = append(recFiles, f.relPath)
+		if c.isUpdate {
+			recFiles = slices.Clone(c.recordFiles)
+			for _, f := range c.resultingFiles {
+				if f.generated {
+					recGen = append(recGen, f.relPath)
+				}
+			}
+		} else {
+			for _, f := range c.files {
+				if f.generated {
+					recGen = append(recGen, f.relPath)
+				} else {
+					recFiles = append(recFiles, f.relPath)
+				}
 			}
 		}
 		slices.Sort(recFiles)
@@ -1545,7 +1678,7 @@ func evaluateCopyLicenses(c *plannedComponent, policy licensePolicy) error {
 	types := map[string]bool{}
 	var unknown []string
 	var docCount int
-	for _, f := range c.files {
+	for _, f := range c.effectiveFiles() {
 		primary, include := isLicenseDocument(path.Base(f.relPath))
 		if !include {
 			continue
@@ -1596,7 +1729,7 @@ func evaluateCopyLicenses(c *plannedComponent, policy licensePolicy) error {
 }
 
 func hasComponentLocales(c *plannedComponent) bool {
-	for _, f := range c.files {
+	for _, f := range c.effectiveFiles() {
 		if f.isLocale && strings.HasSuffix(strings.ToLower(f.relPath), ".yaml") {
 			return true
 		}
@@ -1800,7 +1933,7 @@ func (p *copyPlan) generateComponentCatalog(ctx context.Context, c *plannedCompo
 	if err := os.MkdirAll(locDir, 0o755); err != nil {
 		return nil, err
 	}
-	for _, f := range c.files {
+	for _, f := range c.effectiveFiles() {
 		if !f.isLocale || f.generated {
 			continue
 		}
@@ -1844,7 +1977,7 @@ func detectComponentCatalogSource(c *plannedComponent) string {
 		}
 	}
 	// 2. Check //go:generate go tool nsgo i18n -source <tag> in locales/*.go.
-	for _, f := range c.files {
+	for _, f := range c.effectiveFiles() {
 		if !f.isLocale || !strings.HasSuffix(strings.ToLower(f.relPath), ".go") {
 			continue
 		}
@@ -1859,6 +1992,12 @@ func detectComponentCatalogSource(c *plannedComponent) string {
 					return fields[5]
 				}
 			}
+		}
+	}
+	// 3. Fallback to an existing generated catalog on disk when updating.
+	if raw, ok := c.existingFilesRaw["locales/"+genFile]; ok {
+		if src, _, ok := generatedCatalogBytes(raw); ok && src != "" {
+			return src
 		}
 	}
 	return "en"
@@ -1952,7 +2091,7 @@ func (p *copyPlan) writePlanOverlay(includeFiles bool) (overlayPath string, clea
 	if includeFiles {
 		filesRoot := filepath.Join(tmp, "files")
 		for _, c := range p.components {
-			for _, f := range c.files {
+			for _, f := range c.effectiveFiles() {
 				relFromMod := c.destRel + "/" + f.relPath
 				staged := filepath.Join(filesRoot, filepath.FromSlash(relFromMod))
 				if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
@@ -2017,9 +2156,11 @@ func (p *copyPlan) vetCopies(ctx context.Context) error {
 		}
 	}
 
-	// Materialize all planned copied files into vetModDir.
+	// Materialize all planned copied/updated files into vetModDir.
+	plannedDirs := make(map[string]bool, len(p.components))
 	for _, c := range p.components {
-		for _, f := range c.files {
+		plannedDirs[c.destRel] = true
+		for _, f := range c.effectiveFiles() {
 			dst := filepath.Join(vetModDir, filepath.FromSlash(c.destRel+"/"+f.relPath))
 			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 				return fmt.Errorf("add: %w", err)
@@ -2030,10 +2171,13 @@ func (p *copyPlan) vetCopies(ctx context.Context) error {
 		}
 	}
 
-	// Also materialize any existing copies from the module so a new copy that
-	// imports an already-copied component compiles during vetting.
+	// Also materialize any other existing copies from the module (skipping those
+	// being updated in this plan) so cross-component imports compile during vetting.
 	if existing, err := findModuleCopies(p.m.dir, p.appModPath); err == nil {
 		for _, ec := range existing {
+			if plannedDirs[ec.relDir] {
+				continue
+			}
 			for _, relFile := range slices.Concat(ec.record.Files, ec.record.Generated) {
 				data, err := readCopyFile(ec.dir, relFile)
 				if err != nil {
@@ -2255,9 +2399,13 @@ func (p *copyPlan) write(w io.Writer) error {
 	}
 
 	for _, c := range p.components {
-		// First line: name, origin, and whether this raises the app's module requirement.
+		// First line: name, origin/action, and whether this raises the app's module requirement.
 		header := c.displayName
 		switch {
+		case c.isUpdate && c.isDowngrade:
+			header += fmt.Sprintf("  downgrade of copied component from %s to %s", c.fromVersion, c.srcVersion)
+		case c.isUpdate:
+			header += fmt.Sprintf("  updating copied component from %s to %s", c.fromVersion, c.srcVersion)
 		case strings.HasPrefix(c.fromName, "@"):
 			regName, _, _ := strings.Cut(c.fromName, "/")
 			header += fmt.Sprintf("  from registry %s: a component, copied into this module", regName)
@@ -2271,7 +2419,12 @@ func (p *copyPlan) write(w io.Writer) error {
 		}
 		b.WriteString(header + "\n")
 
-		fromLine := fmt.Sprintf("%s %s %s", c.srcMod, c.srcVersion, c.srcDir)
+		var fromLine string
+		if c.isUpdate {
+			fromLine = fmt.Sprintf("%s %s -> %s %s", c.srcMod, c.fromVersion, c.srcVersion, c.srcDir)
+		} else {
+			fromLine = fmt.Sprintf("%s %s %s", c.srcMod, c.srcVersion, c.srcDir)
+		}
 		switch {
 		case c.appReqVer != "" && c.appReqVer == c.srcVersion:
 			fromLine += ", the version this module requires"
@@ -2283,8 +2436,23 @@ func (p *copyPlan) write(w io.Writer) error {
 		}
 		row("from", fromLine)
 		row("into", fmt.Sprintf("%s: import %q", c.destRel, c.importPath))
+		if c.baseUnavailable != "" {
+			row("base", fmt.Sprintf("recorded version %s unavailable (%s); every file counts as edited", c.fromVersion, c.baseUnavailable))
+		}
 
-		rows("files", c.fileSummaryLines())
+		if c.isUpdate {
+			rows("files", c.updateSummaryLines())
+		} else {
+			rows("files", c.fileSummaryLines())
+		}
+
+		if len(c.conflicts) > 0 {
+			conflictLines := make([]string, len(c.conflicts))
+			for i, cf := range c.conflicts {
+				conflictLines[i] = fmt.Sprintf("%s/%s: %s", c.destRel, cf.relPath, cf.reason)
+			}
+			rows("conflicts", conflictLines)
+		}
 
 		if len(c.rewrites) > 0 {
 			var rwLines []string
@@ -2316,11 +2484,14 @@ func (p *copyPlan) write(w io.Writer) error {
 			rows("licenses", c.licenseRefusals)
 		}
 
-		if len(c.flags) > 0 {
-			flagLines := make([]string, len(c.flags))
-			for i, fl := range c.flags {
-				flagLines[i] = formatComponentFinding(c.destRel, fl)
-			}
+		var flagLines []string
+		for _, fl := range c.flags {
+			flagLines = append(flagLines, formatComponentFinding(c.destRel, fl))
+		}
+		for _, del := range c.flaggedDels {
+			flagLines = append(flagLines, fmt.Sprintf("%s/%s: edited by the app and dropped in %s (deleting it will discard your edits)", c.destRel, del, c.srcVersion))
+		}
+		if len(flagLines) > 0 {
 			rows("flags", flagLines)
 		}
 
@@ -2369,7 +2540,7 @@ func (p *copyPlan) write(w io.Writer) error {
 
 	var nextLines []string
 	for _, c := range p.components {
-		if c.explicit {
+		if c.explicit && !c.isUpdate {
 			nextLines = append(nextLines, fmt.Sprintf("import %q", c.importPath))
 		}
 	}
@@ -2403,18 +2574,35 @@ func (p *copyPlan) write(w io.Writer) error {
 		}
 	}
 
-	// -diff: print every copied file in full.
+	// -diff: print every copied/written file in full.
 	if p.showDiff {
 		for _, c := range p.components {
-			for _, f := range c.files {
-				fmt.Fprintf(&b, "\n=== %s/%s ===\n", c.destRel, f.relPath)
-				if isComponentTextFile(f.relPath) {
-					b.Write(f.data)
-					if len(f.data) > 0 && f.data[len(f.data)-1] != '\n' {
-						b.WriteByte('\n')
+			if c.isUpdate {
+				for _, act := range slices.Concat(c.fileActions, c.genActions) {
+					if act.kind != copyActionAdd && act.kind != copyActionUpdate {
+						continue
 					}
-				} else {
-					fmt.Fprintf(&b, "(binary file, %d bytes)\n", len(f.data))
+					fmt.Fprintf(&b, "\n=== %s/%s ===\n", c.destRel, act.relPath)
+					if isComponentTextFile(act.relPath) {
+						b.Write(act.data)
+						if len(act.data) > 0 && act.data[len(act.data)-1] != '\n' {
+							b.WriteByte('\n')
+						}
+					} else {
+						fmt.Fprintf(&b, "(binary file, %d bytes)\n", len(act.data))
+					}
+				}
+			} else {
+				for _, f := range c.files {
+					fmt.Fprintf(&b, "\n=== %s/%s ===\n", c.destRel, f.relPath)
+					if isComponentTextFile(f.relPath) {
+						b.Write(f.data)
+						if len(f.data) > 0 && f.data[len(f.data)-1] != '\n' {
+							b.WriteByte('\n')
+						}
+					} else {
+						fmt.Fprintf(&b, "(binary file, %d bytes)\n", len(f.data))
+					}
 				}
 			}
 			fmt.Fprintf(&b, "\n=== %s/%s ===\n", c.destRel, copyRecordName)
@@ -2565,7 +2753,16 @@ func (p *copyPlan) apply(ctx context.Context) (retErr error) {
 		}
 	}
 
-	// Re-check destination availability and clean up stale .nsgo-copy-* dirs.
+	// Verify updated copies have not changed since planning, and prepare staging
+	// for new copies.
+	for _, c := range p.components {
+		if c.isUpdate {
+			if err := verifyUpdateUnchanged(c); err != nil {
+				return fmt.Errorf("add: %w", err)
+			}
+		}
+	}
+
 	var createdParents []string
 	var staged []struct {
 		stageDir string
@@ -2573,10 +2770,38 @@ func (p *copyPlan) apply(ctx context.Context) (retErr error) {
 		moved    bool
 	}
 	var writtenMod []modFileState
+	var openedRoots []*os.Root
+	var updateRollbacks []updateRollbackEntry
+	var createdRootDirs []struct {
+		root   *os.Root
+		relDir string
+	}
 
 	defer func() {
+		defer func() {
+			for _, r := range openedRoots {
+				_ = r.Close()
+			}
+		}()
 		if retErr == nil {
 			return
+		}
+		for i := len(updateRollbacks) - 1; i >= 0; i-- {
+			rb := updateRollbacks[i]
+			if rb.existed {
+				if dir := path.Dir(rb.relPath); dir != "." {
+					_ = rb.root.MkdirAll(filepath.FromSlash(dir), 0o755)
+				}
+				retErr = errors.Join(retErr, rb.root.WriteFile(filepath.FromSlash(rb.relPath), rb.oldData, 0o644))
+			} else {
+				err := rb.root.Remove(filepath.FromSlash(rb.relPath))
+				if err != nil && !errors.Is(err, fs.ErrNotExist) {
+					retErr = errors.Join(retErr, err)
+				}
+			}
+		}
+		for i := len(createdRootDirs) - 1; i >= 0; i-- {
+			_ = createdRootDirs[i].root.Remove(filepath.FromSlash(createdRootDirs[i].relDir))
 		}
 		for i := len(staged) - 1; i >= 0; i-- {
 			if staged[i].moved {
@@ -2601,6 +2826,9 @@ func (p *copyPlan) apply(ctx context.Context) (retErr error) {
 
 	cleanedParents := map[string]bool{}
 	for _, c := range p.components {
+		if c.isUpdate {
+			continue
+		}
 		if err := validateCopyDestination(p.m.dir, c.destAbs, c.destRel, c.compName, c.explicit); err != nil {
 			return fmt.Errorf("add: %w", err)
 		}
@@ -2647,7 +2875,7 @@ func (p *copyPlan) apply(ctx context.Context) (retErr error) {
 		writtenMod = append(writtenMod, f)
 	}
 
-	// Move each staged component into its final destination.
+	// Move each staged new component into its final destination.
 	for i := range staged {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("add: interrupted, so the module is as it was: %w", err)
@@ -2656,6 +2884,84 @@ func (p *copyPlan) apply(ctx context.Context) (retErr error) {
 			return fmt.Errorf("add: placing %s failed, so the module is as it was: %w", relTo(p.m.dir, staged[i].destAbs), err)
 		}
 		staged[i].moved = true
+	}
+
+	// Apply file-by-file updates to each existing copied component through os.Root.
+	seq := 0
+	for _, c := range p.components {
+		if !c.isUpdate {
+			continue
+		}
+		root, err := os.OpenRoot(c.destAbs)
+		if err != nil {
+			return fmt.Errorf("add: opening %s: %w", c.destRel, err)
+		}
+		openedRoots = append(openedRoots, root)
+
+		allActions := slices.Concat(c.fileActions, c.genActions)
+		for _, act := range allActions {
+			if act.kind == copyActionKeep {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("add: interrupted, so the module is as it was: %w", err)
+			}
+			oldData, existed := c.existingFilesRaw[act.relPath]
+			switch act.kind {
+			case copyActionAdd, copyActionUpdate:
+				if dir := path.Dir(act.relPath); dir != "." {
+					newDirs, err := mkdirAllInRootTracking(root, dir)
+					if err != nil {
+						return fmt.Errorf("add: updating %s/%s: %w", c.destRel, act.relPath, err)
+					}
+					for _, d := range newDirs {
+						createdRootDirs = append(createdRootDirs, struct {
+							root   *os.Root
+							relDir string
+						}{root: root, relDir: d})
+					}
+				}
+				seq++
+				if err := writeFileInRootAtomically(root, act.relPath, act.data, seq); err != nil {
+					return fmt.Errorf("add: updating %s/%s: %w", c.destRel, act.relPath, err)
+				}
+				updateRollbacks = append(updateRollbacks, updateRollbackEntry{
+					root:    root,
+					relPath: act.relPath,
+					existed: existed,
+					oldData: oldData,
+				})
+			case copyActionDelete, copyActionDeleteEdited:
+				if _, err := checkRootNoSymlinks(root, act.relPath); err != nil {
+					return fmt.Errorf("add: %s/%w", c.destRel, err)
+				}
+				if err := root.Remove(filepath.FromSlash(act.relPath)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					return fmt.Errorf("add: removing %s/%s: %w", c.destRel, act.relPath, err)
+				}
+				updateRollbacks = append(updateRollbacks, updateRollbackEntry{
+					root:    root,
+					relPath: act.relPath,
+					existed: existed,
+					oldData: oldData,
+				})
+				removeEmptyParentDirsInRoot(root, act.relPath)
+			}
+		}
+
+		// Write updated nsgo-copy.yaml atomically.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("add: interrupted, so the module is as it was: %w", err)
+		}
+		seq++
+		if err := writeFileInRootAtomically(root, copyRecordName, c.recordBytes, seq); err != nil {
+			return fmt.Errorf("add: updating %s/%s: %w", c.destRel, copyRecordName, err)
+		}
+		updateRollbacks = append(updateRollbacks, updateRollbackEntry{
+			root:    root,
+			relPath: copyRecordName,
+			existed: true,
+			oldData: c.existingRecordRaw,
+		})
 	}
 
 	return nil

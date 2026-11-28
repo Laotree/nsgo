@@ -431,7 +431,17 @@ The Info.plist of each iOS, tvOS and watchOS bundle `build` writes for devices, 
 
 ### Publish to Google Play
 
-Enable the Google Play Developer API and give a service account permission to release the app to the chosen track. Set `NSGO_PLAY_SERVICE_ACCOUNT` to the account's JSON key or to the path of its key file. [Google Play API setup](https://developers.google.com/android-publisher/getting_started)
+Enable the Google Play Developer API and grant a service account (or user account) permission to release the app in Play Console › Users and permissions. [Google Play API setup](https://developers.google.com/android-publisher/getting_started)
+
+`nsgo publish` authenticates to Google Play using:
+
+1. **`NSGO_PLAY_SERVICE_ACCOUNT`** (takes precedence when set): the service account's JSON key text or the path to its key file.
+2. **Application Default Credentials (ADC)** (used when `NSGO_PLAY_SERVICE_ACCOUNT` is unset, requesting the `https://www.googleapis.com/auth/androidpublisher` scope):
+   - **Local development (keyless)**: impersonate the publishing service account with `gcloud auth application-default login --impersonate-service-account=<service-account>` (grant your user `roles/iam.serviceAccountTokenCreator` on that service account; gcloud's default OAuth client does not grant the `androidpublisher` scope directly, so impersonation is the recommended keyless path).
+   - **GitHub Actions and CI (keyless)**: configure Workload Identity Federation with `google-github-actions/auth`, which writes an `external_account` file and sets `GOOGLE_APPLICATION_CREDENTIALS`.
+   - **Other Google Cloud environments**: `GOOGLE_APPLICATION_CREDENTIALS`, the gcloud ADC file, or the GCE/Cloud Run metadata server.
+
+The command prints the credential type and account email it used (never any secret) and, on an HTTP 401 or 403 from Google Play, reports which identity was refused so you can grant it access in Play Console › Users and permissions.
 
 ```sh
 nsgo build -target android -channel store
@@ -470,7 +480,7 @@ nsgo publish -store play -track production        # also update release notes on
 
 Validation runs before reading credentials or making any HTTP request, checking required fields, locale codes, URL schemes, media files and counts (up to 10 screenshots and 3 previews per App Store display type; up to 8 screenshots per Google Play image type), and character limits (App Store: title 30, subtitle 30, keywords 100, promotional text 170, description 4000, release notes 4000; Google Play: title 30, short description 80, description 4000, release notes 500).
 
-Upload credentials come from the environment alone: `NSGO_APP_STORE_KEY`, `NSGO_APP_STORE_KEY_ID` and `NSGO_APP_STORE_ISSUER` (falling back to the notarization key `NSGO_NOTARY_KEY`, `NSGO_NOTARY_KEY_ID` and `NSGO_NOTARY_ISSUER`) for App Store Connect, and `NSGO_PLAY_SERVICE_ACCOUNT` (service-account JSON file path or JSON text) for Google Play.
+Upload credentials come from the environment or Google Application Default Credentials: `NSGO_APP_STORE_KEY`, `NSGO_APP_STORE_KEY_ID` and `NSGO_APP_STORE_ISSUER` (falling back to the notarization key `NSGO_NOTARY_KEY`, `NSGO_NOTARY_KEY_ID` and `NSGO_NOTARY_ISSUER`) for App Store Connect, and `NSGO_PLAY_SERVICE_ACCOUNT` (service-account JSON file path or JSON text, taking precedence) or Application Default Credentials (`gcloud auth application-default login --impersonate-service-account=…`, `GOOGLE_APPLICATION_CREDENTIALS`, Workload Identity Federation, or GCE metadata) for Google Play.
 
 ### Store compliance
 
@@ -779,9 +789,10 @@ sign:
   # widgets_profile: assets/Widgets.mobileprovision  # the iOS extension's profile; use a macOS profile for a Mac App Store build
   # share_profile: assets/Share.mobileprovision      # signs the IPA's share extension
   # clip_profile: assets/Clip.mobileprovision        # signs the IPA's App Clip
+  # quicklook_profile: assets/QuickLook.provisionprofile  # signs the Mac App Store QuickLook preview extension
 ```
 
-The keystore's passwords come from `NSGO_KEYSTORE_PASSWORD` and `NSGO_KEY_PASSWORD`. `-team` signs the iPhone's package. `-profile`, `-watch-profile`, `-widgets-profile`, `-share-profile`, `-clip-profile` and `-macos-profile` replace the app's, the watch app's, the widget extension's, the share extension's, the App Clip's and the Mac App Store's provisioning profiles from the command line. `-installer` replaces the Mac Installer Distribution identity.
+The keystore's passwords come from `NSGO_KEYSTORE_PASSWORD` and `NSGO_KEY_PASSWORD`. `-team` signs the iPhone's package. `-profile`, `-watch-profile`, `-widgets-profile`, `-share-profile`, `-clip-profile`, `-quicklook-profile` and `-macos-profile` replace the app's, the watch app's, the widget extension's, the share extension's, the App Clip's, the Mac App Store QuickLook extension's and the Mac App Store's provisioning profiles from the command line. `-installer` replaces the Mac Installer Distribution identity.
 
 For `-target watchos`, `nsgo build` keeps the standalone `<name>.app` for `-run` device installs and writes `<name>.ipa` (copied to `dist/releases` as `<slug>-<version>-watchos.ipa`) containing Xcode's watch-only iOS stub (`ITSWatchOnlyContainer`), the nested watchOS app (`<id>.watchkitapp`) and `WatchKitSupport2/WK`. For App Store Connect, set `sign.profile` for `<id>` and `sign.watch_profile` for `<id>.watchkitapp` from the same team (or a single wildcard `sign.profile` covering both); the build validates both profiles and signs inside-out.
 
@@ -825,6 +836,19 @@ sign:
 ## Widgets and Live Activities
 
 `build` and `dev` compile the extension that draws the app's widgets and Live Activities into the macOS and iOS packages with Xcode's Swift compiler, with no separate step. On iOS the app and its widgets share an app group: `-run` on an iPhone has Xcode sign both and register the group; for an IPA, enable it for both `<id>` and `<id>.widgets`, and sign the extension with `sign.widgets_profile`. Android standalone APKs and AABs include App Widget providers and resources from `widgets`; the prebuilt Java runtime draws their timelines with no SDK or Java compiler needed by app builds. Android 16 shows Live Activities as Live Updates, which need no extension. [Widgets](widgets.md) and [Live Activities](live-activities.md) cover their configuration and API.
+
+## QuickLook previews
+
+On macOS, `quicklook` embeds a QuickLook Preview Extension (`Contents/PlugIns/QuickLookPreview.appex`) so Finder previews the app's documents with an NSGo view:
+
+```yaml
+quicklook:
+  main: ./cmd/quicklook      # Go main package calling nsgo.RunQuickLook
+  # id: dev.example.app.quicklook  # <id>.quicklook by default
+  # types: [dev.example.app.doc]   # defaults to all UTIs declared in file_types
+```
+
+The entry package calls `nsgo.RunQuickLook(Preview)` (accepting `nsgo.WindowSize` for the preview's preferred content size, `nsgo.Fonts`, `nsgo.Appearance`, `nsgo.Component`, `nsgo.DataDir` and `nsgo.OnError`). `Preview` receives the selected file's path directly, and `"path"` and `"url"` are also available in `cx.HostParams()`. macOS runs the extension inside App Sandbox with read access granted only to the selected file URL. `build` signs the `.appex` with `com.apple.security.app-sandbox` before signing the app — ad hoc for local builds and `dev` (which registers it with `pluginkit -a`), with `sign.identity` and hardened runtime/timestamp when notarizing, and with `sign.quicklook_profile` (`-quicklook-profile`) from the same team for provisioned Mac App Store builds — and `macos_universal` joins its binary with `lipo`.
 
 ## Android App Links
 

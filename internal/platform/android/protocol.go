@@ -368,10 +368,19 @@ func writeStyle(w *writer, t *driver.TextStyle, prepareSurface bool) {
 	w.points(t.LineHeight)
 	w.points(t.LetterSpacing)
 	w.byte(byte(t.Align))
+	variations := driver.FontAndroidVariationSettings(t.Font)
+	hasAxes := variations != ""
+	hasFeatures := len(t.Font.Features) > 0
 	w.flags(t.Font.Italic,
 		t.Decoration&driver.TextDecorationUnderline != 0,
-		t.Decoration&driver.TextDecorationLineThrough != 0, t.RTL, prepareSurface)
+		t.Decoration&driver.TextDecorationLineThrough != 0, t.RTL, prepareSurface, hasAxes, hasFeatures)
 	w.byte(byte(t.Font.Variant))
+	if hasAxes {
+		w.str(variations)
+	}
+	if hasFeatures {
+		w.str(driver.FontAndroidFeatureSettings(t.Font))
+	}
 }
 
 // writeViewProps writes a view's props as NsgoView.props reads it.
@@ -831,6 +840,10 @@ func readEvent(r *reader) (uint32, driver.Event, string) {
 	if ev.Kind == driver.EventError && ev.Navigation != nil && data != "" {
 		// A web view's platform failure carries its domain in data and its code in index.
 		ev.Data, ev.Index, data = &driver.WebFailure{Domain: data, Code: ev.Index}, 0, ""
+	}
+	if ev.Kind == driver.EventAccessibilityAction && data != "" {
+		// A canvas node action carries its node ID in data and optional progress flag in finished.
+		ev.CanvasNode, ev.HasValue, ev.Finished, data = data, ev.Finished, false, ""
 	}
 	return from, ev, data
 }

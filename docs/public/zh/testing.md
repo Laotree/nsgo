@@ -58,7 +58,7 @@ func TestMain(m *testing.M) {
 
 `app.PressWith("id:row", core.Modifiers{Shift: true})` 为一次点击按住修饰键；`PressAtWith(selector, core.Point{X: 20, Y: 10}, mods)` 点击视图中的指定点。`Shift`、`Control`、`Alt` 和 `Platform`（Apple 上为 Command，其他平台为 Windows/Super 键）会通过无头模型和目标的原生输入传给 `OnPressDown`、`OnPressUp` 和 `OnPress`。仍遵循平台的原生约定：例如 macOS 上的 Chrome 会将 Control-click 转为上下文菜单。之后的 `Press` 或 `PressAt` 不带修饰键。watchOS 没有键盘修饰键输入，因此会拒绝带修饰键的点击。
 
-目标测试会将滚动内容中的控件移到原生栏未遮挡的位置，并遵循嵌套视口及各滚动轴。`PressAt` 的坐标是指定视图的视口内的点。无头模型和目标平台的测试模型在寻找点击目标、判断可见性和计算滚动范围时，都会计入滚动内容的缩放，包括嵌套缩放和小于 1 的比例。视图的 `Bounds()` 仍与 `Ref.Bounds` 一样，报告变换前的布局框。
+目标测试会将滚动内容中的控件移到原生栏未遮挡的位置，并遵循嵌套视口及各滚动轴。`app.ScrollIntoView(selector)`（以及 `Surface.ScrollIntoView`）滚动离匹配视图最近的滚动视图，使匹配视图完整进入计入内容内边距的可见视口（超出视口时对齐到最近边缘）；已在视口内时不滚动，没有可滚动祖先时失败。`PressAt` 的坐标是指定视图的视口内的点。无头模型和目标平台的测试模型在寻找点击目标、判断可见性和计算滚动范围时，都会计入滚动内容的缩放，包括嵌套缩放和小于 1 的比例。视图的 `Bounds()` 仍与 `Ref.Bounds` 一样，报告变换前的布局框；`WindowFrame()` 则返回计入滚动偏移、内容缩放和样式变换后的窗口坐标边界框。
 
 点击可以直接指定文本框。在无头测试和各个目标平台上，可以在点击返回后立即读取 `app.Find("id:field").Focused`，包括点击处理函数聚焦文本框的情况。
 
@@ -108,7 +108,7 @@ func TestMain(m *testing.M) {
 
 `nsgotest.UpdaterState(core.UpdaterState{...})` 可在第一次渲染前设置更新器的能力和偏好，适用于无窗口测试及原生目标。通过 `app.Update` 提供每次检查的结果；偏好变更由测试模型处理，不访问更新源。
 
-无头测试通过 `app.EditMenu` 和 `app.EditMenuItems()` 检查编辑菜单，用 `app.ChooseEditAction(core.EditCopy)` 选择已提供的操作，用 `app.CloseEditMenu()` 关闭菜单；粘贴使用测试的剪贴板。`app.LongPressAt(selector, point)` 长按指定位置；无头测试中，`app.Touch(selector, point).Hold(duration)` 会在手指抬起之前触发长按，随后可用 `Move` 测试选区扫动。这些菜单记录和操作选择检查模型行为，系统工具栏仍需原生验收。
+无头测试通过 `app.EditMenu` 和 `app.EditMenuItems()` 检查编辑菜单，用 `app.ChooseEditAction(core.EditCopy)` 选择已提供的操作，用 `app.CloseEditMenu()` 关闭菜单；粘贴使用测试的剪贴板。`app.LongPressAt(selector, point)` 长按指定位置；无头测试中，`app.Touch(selector, point).Hold(duration)` 会在手指抬起之前触发长按，随后可用 `Move` 测试选区扫动。每次调用 `app.Touch(selector, point)` 都会分配递增的唯一 `Finger.ID()`，上报指针输入模态，并在 `Lift`、`LiftAt` 或 `Cancel` 之前与其他按住的手指并存；每次触摸事件都会列出当前所有按住的手指，只对发生变化的那根手指设置 `Changed`。这些菜单记录和操作选择检查模型行为，系统工具栏仍需原生验收。
 
 `View.Props` 是 `nsgotest.ViewProps` 快照，记录视图标识、无障碍名称和状态、操作，以及焦点和指针设置。`HelpText`、`HasAction`、`ActionList` 和 `FocusStop` 提供对应策略；标签 ID、操作列表和涟漪设置会从挂载值复制。
 

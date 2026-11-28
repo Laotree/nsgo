@@ -653,6 +653,11 @@ func signUniversalAdHoc(ctx context.Context, p *project, app string) error {
 			return err
 		}
 	}
+	if appex := macQuickLookAppex(app); p.QuickLook != nil {
+		if err := signMacQuickLook(ctx, p, appex, "-"); err != nil {
+			return err
+		}
+	}
 	err := filepath.WalkDir(filepath.Join(app, "Contents"), func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil || entry.IsDir() || !strings.HasSuffix(path, ".dylib") {
 			return walkErr
@@ -710,7 +715,14 @@ func goBuildWith(ctx context.Context, p *project, out string, env []string, extr
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("go %s failed\n%s", cmd.Args[1], strings.TrimSpace(output.String()))
+		msg := strings.TrimSpace(output.String())
+		if extra := annotateCopyFailure(p.Dir, msg); extra != "" {
+			if msg != "" {
+				msg += "\n"
+			}
+			msg += extra
+		}
+		return fmt.Errorf("go %s failed\n%s", cmd.Args[1], msg)
 	}
 	return nil
 }
@@ -1074,6 +1086,9 @@ func buildMacApp(ctx context.Context, p *project, dir, arch string) (string, err
 		return "", err
 	}
 	if err := addMacWidgets(ctx, p, app, arch); err != nil {
+		return "", err
+	}
+	if err := addMacQuickLook(ctx, p, app, arch); err != nil {
 		return "", err
 	}
 	if err := addMacStoreKit(ctx, p, app, arch); err != nil {
@@ -1592,11 +1607,11 @@ func (p *project) webHost() ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// pageCSS is the page's style: the app fills the window, and the page
-// never zooms, as an app's window does not; views that zoom take pinches
-// themselves.
+// pageCSS is the page's style: the app fills the window, never zooms, and
+// disables page overscroll so pull-to-refresh and rubber-banding do not
+// interrupt drags; views that zoom or bounce handle them themselves.
 func pageCSS(p *project) []byte {
-	css := "* { touch-action: pan-x pan-y; }\nhtml, body { margin: 0; height: 100%;"
+	css := "* { touch-action: pan-x pan-y; }\nhtml, body { margin: 0; height: 100%; overscroll-behavior: none;"
 	if color := appearanceColor(p.Appearance); color != "" {
 		css += " background: " + color + ";"
 	}

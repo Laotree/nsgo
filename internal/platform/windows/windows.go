@@ -380,21 +380,25 @@ type window struct {
 	powerNotification uintptr
 	// primary is the backend's own surface. Opened surfaces share its engine
 	// and message loop, but closing one must not end the process.
-	primary       bool
-	hostWindow    *window // root window for services shared by an opened surface
-	kind          driver.SurfaceKind
-	destroying    bool
-	sessionEnding bool
-	startup       *packagedStartup
-	hideOnBlur    bool
-	noActivate    bool
-	dock          driver.PanelDock
-	visible       bool
+	primary          bool
+	hostWindow       *window // root window for services shared by an opened surface
+	kind             driver.SurfaceKind
+	destroying       bool
+	biometricsClosed bool
+	sessionEnding    bool
+	startup          *packagedStartup
+	hideOnBlur       bool
+	noActivate       bool
+	dock             driver.PanelDock
+	visible          bool
 	// showFirst waits for the first mount batch before showing a newly opened window or panel, so no empty frame flashes before the app mounts.
 	showFirst firstShow
 	// pointerMode is where the window takes the pointer (windowpointer.go).
 	pointerMode driver.WindowPointerEvents
 	focused     bool
+	// axFocusView and axFocusPart hold the canvas node targeted by ItemAccessibilityFocus or UIA SetFocus.
+	axFocusView driver.NodeID
+	axFocusPart int
 	// anchor is the tray icon a panel last showed under, 0 for none, and anchorBounds and placement where core.Window.ShowAt last placed it, placement WindowPlaceDefault for nowhere. noActivate keeps a panel from ever taking the focus.
 	anchor       uint32
 	anchorBounds driver.Bounds
@@ -1464,8 +1468,11 @@ func (w *window) apply(b *driver.MountBatch) {
 				w.sensorLocation(it.Count, *it.Sensor)
 			}
 			continue
-		case driver.ItemBiometricAvailability, driver.ItemBiometricAuthenticate:
-			w.engine.Dispatch(driver.NoBiometric(it))
+		case driver.ItemBiometricAvailability:
+			w.biometricAvailability(it.Count)
+			continue
+		case driver.ItemBiometricAuthenticate:
+			w.biometricAuthenticate(it.Count, it.Value)
 			continue
 		case driver.ItemAuthSession:
 			w.authSession(it.Count, *it.Auth)
@@ -1685,8 +1692,16 @@ func (w *window) apply(b *driver.MountBatch) {
 			}
 			continue
 		case driver.ItemAccessibilityFocus:
-			if v := w.view(it.ID); v != nil && v.field != nil {
-				w.setFocus(v.field)
+			if v := w.view(it.ID); v != nil {
+				if it.Value != "" {
+					w.focusCanvasNode(v, it.Value)
+				} else if v.field != nil {
+					w.axFocusView, w.axFocusPart = 0, 0
+					w.setFocus(v.field)
+				} else {
+					w.axFocusView, w.axFocusPart = 0, 0
+					w.focusView(v)
+				}
 			}
 			continue
 		case driver.ItemStatusBar, driver.ItemBackUnhandled, driver.ItemBackPreview, driver.ItemHistory:
@@ -1852,13 +1867,15 @@ func (w *window) apply(b *driver.MountBatch) {
 			// A modal is a view; it appears without animation.
 		case driver.ItemCanvas:
 			held := w.uiaHeld(v)
-			had := len(v.canvasNodes())
+			prevNodes := v.canvasNodes()
+			had := len(prevNodes)
 			was := v.drawing
 			v.drawing = it.Drawing
 			v.canvasCache.setDrawing(nil)
-			was.Release()
 			w.forgetParts(v.id, len(v.canvasNodes())+1, had)
 			w.uiaChanged(held)
+			w.canvasLiveChanged(v, prevNodes)
+			was.Release()
 			w.animator.BindCanvas(v.id, it.Drawing.Slots)
 		case driver.ItemShader:
 			if sh := shaders.Load(); sh != nil {
@@ -3290,6 +3307,7 @@ func wndProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 		endWindowGuide(w)
 		endWindowScanner(w)
 		endWindowLocation(w)
+		endWindowBiometrics(w)
 		w.releaseAllAwake()
 		w.loopback.Close()
 		// Clients let the window's providers go.

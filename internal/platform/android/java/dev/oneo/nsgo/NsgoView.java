@@ -2213,7 +2213,7 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
             try {
                 android.graphics.Typeface typeface = android.graphics.Typeface.createFromAsset(getContext().getAssets(), path);
                 Object font = Text.assetFont(getContext().getAssets(), path, weight, italic);
-                Text.register(family, weight, italic, typeface, font);
+                Text.register(family, weight, italic, typeface, font, getContext().getAssets(), path, null);
             } catch (RuntimeException e) {
                 Log.w(TAG, "font " + path + ": " + e);
             }
@@ -2242,7 +2242,7 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
             }
             android.graphics.Typeface typeface = android.graphics.Typeface.createFromFile(file);
             Object font = Text.fileFont(file, weight, italic);
-            Text.register(family, weight, italic, typeface, font);
+            Text.register(family, weight, italic, typeface, font, null, null, file);
         } catch (IOException | RuntimeException e) {
             Log.w(TAG, "font " + family + ": " + e);
         }
@@ -3778,6 +3778,9 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
             }
             case Protocol.ITEM_EVENTS:
                 events(n, in.readLong());
+                if (n != null && n.canvas != null) {
+                    n.canvas.handlesActions = n.has(Protocol.EVENT_ACCESSIBILITY_ACTION);
+                }
                 break;
             case Protocol.ITEM_VIEW_PROPS:
                 props(n, in);
@@ -3924,14 +3927,24 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
                 for (int i = 0; i < parts.length; i++) {
                     float x = in.readFloat(), y = in.readFloat(), w = in.readFloat(), h = in.readFloat();
                     int role = in.readUnsignedByte();
-                    String label = Protocol.readString(in), testID = Protocol.readString(in);
-                    boolean selected = in.readUnsignedByte() != 0;
-                    parts[i] = new CanvasNode.Part(x, y, w, h, role, label, testID, selected);
+                    String partID = Protocol.readString(in), label = Protocol.readString(in),
+                            hint = Protocol.readString(in), testID = Protocol.readString(in);
+                    float value = in.readFloat(), min = in.readFloat(), max = in.readFloat(), step = in.readFloat();
+                    String valueText = Protocol.readString(in);
+                    int flags = in.readUnsignedByte();
+                    int expanded = in.readUnsignedByte(), checked = in.readUnsignedByte(),
+                            live = in.readUnsignedByte(), actions = in.readUnsignedByte();
+                    parts[i] = new CanvasNode.Part(x, y, w, h, role, partID, label, hint, testID,
+                            value, min, max, step, valueText,
+                            Protocol.flag(flags, 0), Protocol.flag(flags, 1), Protocol.flag(flags, 2),
+                            expanded, checked, live, actions);
                 }
                 float resolution = in.readFloat();
                 boolean nearest = in.readUnsignedByte() != 0;
                 String[] keys = new String[in.readInt()];
                 for (int i = 0; i < keys.length; i++) keys[i] = Protocol.readString(in);
+                n.canvas.spoken = spoken;
+                n.canvas.handlesActions = n.has(Protocol.EVENT_ACCESSIBILITY_ACTION);
                 n.canvas.setPixels(keys, frames);
                 n.canvas.setResolution(resolution, !nearest);
                 n.canvas.setOps(ops, offsets, colors, parts);
@@ -4297,8 +4310,13 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
                 describe(n);
                 break;
             case Protocol.ITEM_ACCESSIBILITY_FOCUS: {
-                View view = n.accessible();
-                view.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null);
+                String partID = Protocol.readString(in);
+                if (!partID.isEmpty() && n.canvas != null) {
+                    n.canvas.focusPart(partID);
+                } else {
+                    View view = n.accessible();
+                    view.performAccessibilityAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null);
+                }
                 break;
             }
             case Protocol.ITEM_ANIMATION:
@@ -6152,8 +6170,16 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
             }
         });
         if (view instanceof CanvasNode) {
-            ((CanvasNode) view).presser = this::pressAtScreen;
-            ((CanvasNode) view).pictures = canvasImages;
+            CanvasNode cn = (CanvasNode) view;
+            cn.presser = this::pressAtScreen;
+            cn.pictures = canvasImages;
+            cn.spoken = spoken;
+            cn.actionListener = (nodeID, action, val, hasVal) -> {
+                if (!n.has(Protocol.EVENT_ACCESSIBILITY_ACTION)) return false;
+                event(Protocol.EVENT_ACCESSIBILITY_ACTION, n.id, 0, 0, 0, action, 0, 0, 0, 0, 0, 0, val, null,
+                        0, 0, false, nodeID, hasVal);
+                return true;
+            };
         }
         byView.put(view, n);
         view.setOnFocusChangeListener((v, focused) -> {
@@ -6564,6 +6590,7 @@ public class NsgoView extends FrameLayout implements NsgoEngine.Listener {
         field.setTextColor(style.color);
         field.setLetterSpacing(style.letterSpacingEm());
         field.setFontFeatureSettings(style.features);
+        if (Build.VERSION.SDK_INT >= 26) field.setFontVariationSettings(style.variations);
         field.setPaintFlags(style.paintFlags(field.getPaintFlags()));
         field.setTextLocale(style.locale != null ? style.locale : Locale.getDefault());
         if (Build.VERSION.SDK_INT >= 33) {
